@@ -213,6 +213,7 @@ private slots:
     void ShowFullscreen();
     void HideFullscreen();
     void ToggleWindowMode();
+    void ResetWindowSize();
     void OnCaptureScreenshot();
     void OnCoreError(Core::System::ResultStatus, std::string);
     void OnReinitializeKeys(ReinitializeKeyBehavior behavior);
