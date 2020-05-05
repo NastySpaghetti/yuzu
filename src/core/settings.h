@@ -479,7 +479,6 @@ struct Values {
 
     // WebService
     bool enable_telemetry;
-    std::string web_api_url;
     std::string yuzu_username;
     std::string yuzu_token;
 
