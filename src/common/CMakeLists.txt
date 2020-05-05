@@ -108,8 +108,6 @@ add_library(common STATIC
     common_types.h
     dynamic_library.cpp
     dynamic_library.h
-    fiber.cpp
-    fiber.h
     file_util.cpp
     file_util.h
     hash.h
@@ -141,8 +139,6 @@ add_library(common STATIC
     scm_rev.cpp
     scm_rev.h
     scope_exit.h
-    spin_lock.cpp
-    spin_lock.h
     string_util.cpp
     string_util.h
     swap.h
@@ -161,8 +157,6 @@ add_library(common STATIC
     vector_math.h
     virtual_buffer.cpp
     virtual_buffer.h
-    wall_clock.cpp
-    wall_clock.h
     web_result.h
     zstd_compression.cpp
     zstd_compression.h
@@ -173,8 +167,6 @@ if(ARCHITECTURE_x86_64)
         PRIVATE
             x64/cpu_detect.cpp
             x64/cpu_detect.h
-            x64/native_clock.cpp
-            x64/native_clock.h
     )
 endif()
 
