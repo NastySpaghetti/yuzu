@@ -12,7 +12,7 @@
 
 namespace Tegra {
 
-DmaPusher::DmaPusher(GPU& gpu) : gpu(gpu) {}
+DmaPusher::DmaPusher(Core::System& system, GPU& gpu) : gpu{gpu}, system{system} {}
 
 DmaPusher::~DmaPusher() = default;
 
@@ -21,17 +21,20 @@ MICROPROFILE_DEFINE(DispatchCalls, "GPU", "Execute command buffer", MP_RGB(128, 
 void DmaPusher::DispatchCalls() {
     MICROPROFILE_SCOPE(DispatchCalls);
 
+    gpu.SyncGuestHost();
     // On entering GPU code, assume all memory may be touched by the ARM core.
-    gpu.Maxwell3D().dirty.OnMemoryWrite();
+    gpu.Maxwell3D().OnMemoryWrite();
 
     dma_pushbuffer_subindex = 0;
 
-    while (Core::System::GetInstance().IsPoweredOn()) {
+    while (system.IsPoweredOn()) {
         if (!Step()) {
             break;
         }
     }
     gpu.FlushCommands();
+    gpu.SyncGuestHost();
+    gpu.OnCommandListEnd();
 }
 
 bool DmaPusher::Step() {
@@ -68,16 +71,22 @@ bool DmaPusher::Step() {
     gpu.MemoryManager().ReadBlockUnsafe(dma_get, command_headers.data(),
                                         command_list_header.size * sizeof(u32));
 
-    for (const CommandHeader& command_header : command_headers) {
+    for (std::size_t index = 0; index < command_headers.size();) {
+        const CommandHeader& command_header = command_headers[index];
 
-        // now, see if we're in the middle of a command
-        if (dma_state.length_pending) {
-            // Second word of long non-inc methods command - method count
-            dma_state.length_pending = 0;
-            dma_state.method_count = command_header.method_count_;
-        } else if (dma_state.method_count) {
+        if (dma_state.method_count) {
             // Data word of methods command
-            CallMethod(command_header.argument);
+            if (dma_state.non_incrementing) {
+                const u32 max_write = static_cast<u32>(
+                    std::min<std::size_t>(index + dma_state.method_count, command_headers.size()) -
+                    index);
+                CallMultiMethod(&command_header.argument, max_write);
+                dma_state.method_count -= max_write;
+                index += max_write;
+                continue;
+            } else {
+                CallMethod(command_header.argument);
+            }
 
             if (!dma_state.non_incrementing) {
                 dma_state.method++;
@@ -117,6 +126,7 @@ bool DmaPusher::Step() {
                 break;
             }
         }
+        index++;
     }
 
     if (!non_main) {
@@ -135,6 +145,11 @@ void DmaPusher::SetState(const CommandHeader& command_header) {
 
 void DmaPusher::CallMethod(u32 argument) const {
     gpu.CallMethod({dma_state.method, argument, dma_state.subchannel, dma_state.method_count});
+}
+
+void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) const {
+    gpu.CallMultiMethod(dma_state.method, dma_state.subchannel, base_start, num_methods,
+                        dma_state.method_count);
 }
 
 } // namespace Tegra

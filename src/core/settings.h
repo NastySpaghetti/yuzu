@@ -371,6 +371,17 @@ enum class SDMCSize : u64 {
     S1TB = 0x10000000000ULL,
 };
 
+enum class RendererBackend {
+    OpenGL = 0,
+    Vulkan = 1,
+};
+
+enum class GPUAccuracy : u32 {
+    Normal = 0,
+    High = 1,
+    Extreme = 2,
+};
+
 struct Values {
     // System
     bool use_docked_mode;
@@ -382,6 +393,8 @@ struct Values {
 
     s32 current_user;
     s32 language_index;
+    s32 region_index;
+    s32 sound_index;
 
     // Controls
     std::array<PlayerInput, 10> players;
@@ -401,6 +414,9 @@ struct Values {
     std::string motion_device;
     TouchscreenInput touchscreen;
     std::atomic_bool is_device_reload_pending{true};
+    std::string udp_input_address;
+    u16 udp_input_port;
+    u8 udp_pad_index;
 
     // Core
     bool use_multi_core;
@@ -416,14 +432,21 @@ struct Values {
     SDMCSize sdmc_size;
 
     // Renderer
+    RendererBackend renderer_backend;
+    bool renderer_debug;
+    int vulkan_device;
+
     float resolution_factor;
+    int aspect_ratio;
+    int max_anisotropy;
     bool use_frame_limit;
     u16 frame_limit;
     bool use_disk_shader_cache;
-    bool use_accurate_gpu_emulation;
+    GPUAccuracy gpu_accuracy;
     bool use_asynchronous_gpu_emulation;
+    bool use_vsync;
     bool force_30fps_mode;
-    bool use_resolution_scanner;
+    bool use_fast_gpu_time;
 
     float bg_red;
     float bg_green;
@@ -448,6 +471,7 @@ struct Values {
     bool dump_nso;
     bool reporting_services;
     bool quest_flag;
+    bool disable_cpu_opt;
 
     // BCAT
     std::string bcat_backend;
@@ -455,13 +479,15 @@ struct Values {
 
     // WebService
     bool enable_telemetry;
-    std::string web_api_url;
     std::string yuzu_username;
     std::string yuzu_token;
 
     // Add-Ons
     std::map<u64, std::vector<std::string>> disabled_addons;
 } extern values;
+
+bool IsGPULevelExtreme();
+bool IsGPULevelHigh();
 
 void Apply();
 void LogSettings();

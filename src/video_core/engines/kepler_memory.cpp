@@ -34,10 +34,17 @@ void KeplerMemory::CallMethod(const GPU::MethodCall& method_call) {
         const bool is_last_call = method_call.IsLastCall();
         upload_state.ProcessData(method_call.argument, is_last_call);
         if (is_last_call) {
-            system.GPU().Maxwell3D().dirty.OnMemoryWrite();
+            system.GPU().Maxwell3D().OnMemoryWrite();
         }
         break;
     }
+    }
+}
+
+void KeplerMemory::CallMultiMethod(u32 method, const u32* base_start, u32 amount,
+                                   u32 methods_pending) {
+    for (std::size_t i = 0; i < amount; i++) {
+        CallMethod({method, base_start[i], 0, methods_pending - static_cast<u32>(i)});
     }
 }
 

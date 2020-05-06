@@ -6,6 +6,7 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -24,8 +25,11 @@ inline u8* FromCacheAddr(CacheAddr cache_addr) {
 }
 
 namespace Core {
-class System;
+namespace Frontend {
+class EmuWindow;
 }
+class System;
+} // namespace Core
 
 namespace VideoCore {
 class RendererBase;
@@ -38,6 +42,7 @@ enum class RenderTargetFormat : u32 {
     RGBA32_FLOAT = 0xC0,
     RGBA32_UINT = 0xC2,
     RGBA16_UNORM = 0xC6,
+    RGBA16_SNORM = 0xC7,
     RGBA16_UINT = 0xC9,
     RGBA16_FLOAT = 0xCA,
     RG32_FLOAT = 0xCB,
@@ -56,12 +61,14 @@ enum class RenderTargetFormat : u32 {
     RG16_UINT = 0xDD,
     RG16_FLOAT = 0xDE,
     R11G11B10_FLOAT = 0xE0,
+    R32_SINT = 0xE3,
     R32_UINT = 0xE4,
     R32_FLOAT = 0xE5,
     B5G6R5_UNORM = 0xE8,
     BGR5A1_UNORM = 0xE9,
     RG8_UNORM = 0xEA,
     RG8_SNORM = 0xEB,
+    RG8_UINT = 0xED,
     R16_UNORM = 0xEE,
     R16_SNORM = 0xEF,
     R16_SINT = 0xF0,
@@ -80,12 +87,6 @@ enum class DepthFormat : u32 {
     Z24_C8_UNORM = 0x18,
     Z32_S8_X24_FLOAT = 0x19,
 };
-
-/// Returns the number of bytes per pixel of each rendertarget format.
-u32 RenderTargetBytesPerPixel(RenderTargetFormat format);
-
-/// Returns the number of bytes per pixel of each depth format.
-u32 DepthFormatBytesPerPixel(DepthFormat format);
 
 struct CommandListHeader;
 class DebugContext;
@@ -132,7 +133,8 @@ class MemoryManager;
 
 class GPU {
 public:
-    explicit GPU(Core::System& system, VideoCore::RendererBase& renderer, bool is_async);
+    explicit GPU(Core::System& system, std::unique_ptr<VideoCore::RendererBase>&& renderer,
+                 bool is_async);
 
     virtual ~GPU();
 
@@ -154,7 +156,27 @@ public:
     /// Calls a GPU method.
     void CallMethod(const MethodCall& method_call);
 
+    /// Calls a GPU multivalue method.
+    void CallMultiMethod(u32 method, u32 subchannel, const u32* base_start, u32 amount,
+                         u32 methods_pending);
+
+    /// Flush all current written commands into the host GPU for execution.
     void FlushCommands();
+    /// Synchronizes CPU writes with Host GPU memory.
+    void SyncGuestHost();
+    /// Signal the ending of command list.
+    virtual void OnCommandListEnd();
+
+    /// Request a host GPU memory flush from the CPU.
+    u64 RequestFlush(VAddr addr, std::size_t size);
+
+    /// Obtains current flush request fence id.
+    u64 CurrentFlushRequestFence() const {
+        return current_flush_fence.load(std::memory_order_relaxed);
+    }
+
+    /// Tick pending requests within the GPU.
+    void TickWork();
 
     /// Returns a reference to the Maxwell3D GPU engine.
     Engines::Maxwell3D& Maxwell3D();
@@ -177,6 +199,20 @@ public:
     /// Returns a reference to the GPU DMA pusher.
     Tegra::DmaPusher& DmaPusher();
 
+    VideoCore::RendererBase& Renderer() {
+        return *renderer;
+    }
+
+    const VideoCore::RendererBase& Renderer() const {
+        return *renderer;
+    }
+
+    // Waits for the GPU to finish working
+    virtual void WaitIdle() const = 0;
+
+    /// Allows the CPU/NvFlinger to wait on the GPU before presenting a frame.
+    void WaitFence(u32 syncpoint_id, u32 value);
+
     void IncrementSyncPoint(u32 syncpoint_id);
 
     u32 GetSyncpointValue(u32 syncpoint_id) const;
@@ -184,6 +220,8 @@ public:
     void RegisterSyncptInterrupt(u32 syncpoint_id, u32 value);
 
     bool CancelSyncptInterrupt(u32 syncpoint_id, u32 value);
+
+    u64 GetTicks() const;
 
     std::unique_lock<std::mutex> LockSync() {
         return std::unique_lock{sync_mutex};
@@ -201,7 +239,7 @@ public:
 
         union {
             struct {
-                INSERT_PADDING_WORDS(0x4);
+                INSERT_UNION_PADDING_WORDS(0x4);
                 struct {
                     u32 address_high;
                     u32 address_low;
@@ -214,12 +252,12 @@ public:
 
                 u32 semaphore_sequence;
                 u32 semaphore_trigger;
-                INSERT_PADDING_WORDS(0xC);
+                INSERT_UNION_PADDING_WORDS(0xC);
 
                 // The puser and the puller share the reference counter, the pusher only has read
                 // access
                 u32 reference_count;
-                INSERT_PADDING_WORDS(0x5);
+                INSERT_UNION_PADDING_WORDS(0x5);
 
                 u32 semaphore_acquire;
                 u32 semaphore_release;
@@ -228,7 +266,7 @@ public:
                     BitField<4, 4, u32> operation;
                     BitField<8, 8, u32> id;
                 } fence_action;
-                INSERT_PADDING_WORDS(0xE2);
+                INSERT_UNION_PADDING_WORDS(0xE2);
 
                 // Puller state
                 u32 acquire_mode;
@@ -253,13 +291,13 @@ public:
     virtual void SwapBuffers(const Tegra::FramebufferConfig* framebuffer) = 0;
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
-    virtual void FlushRegion(CacheAddr addr, u64 size) = 0;
+    virtual void FlushRegion(VAddr addr, u64 size) = 0;
 
     /// Notify rasterizer that any caches of the specified region should be invalidated
-    virtual void InvalidateRegion(CacheAddr addr, u64 size) = 0;
+    virtual void InvalidateRegion(VAddr addr, u64 size) = 0;
 
     /// Notify rasterizer that any caches of the specified region should be flushed and invalidated
-    virtual void FlushAndInvalidateRegion(CacheAddr addr, u64 size) = 0;
+    virtual void FlushAndInvalidateRegion(VAddr addr, u64 size) = 0;
 
 protected:
     virtual void TriggerCpuInterrupt(u32 syncpoint_id, u32 value) const = 0;
@@ -276,13 +314,17 @@ private:
     /// Calls a GPU engine method.
     void CallEngineMethod(const MethodCall& method_call);
 
+    /// Calls a GPU engine multivalue method.
+    void CallEngineMultiMethod(u32 method, u32 subchannel, const u32* base_start, u32 amount,
+                               u32 methods_pending);
+
     /// Determines where the method should be executed.
-    bool ExecuteMethodOnEngine(const MethodCall& method_call);
+    bool ExecuteMethodOnEngine(u32 method);
 
 protected:
     std::unique_ptr<Tegra::DmaPusher> dma_pusher;
     Core::System& system;
-    VideoCore::RendererBase& renderer;
+    std::unique_ptr<VideoCore::RendererBase> renderer;
 
 private:
     std::unique_ptr<Tegra::MemoryManager> memory_manager;
@@ -305,6 +347,21 @@ private:
     std::array<std::list<u32>, Service::Nvidia::MaxSyncPoints> syncpt_interrupts;
 
     std::mutex sync_mutex;
+
+    std::condition_variable sync_cv;
+
+    struct FlushRequest {
+        FlushRequest(u64 fence, VAddr addr, std::size_t size)
+            : fence{fence}, addr{addr}, size{size} {}
+        u64 fence;
+        VAddr addr;
+        std::size_t size;
+    };
+
+    std::list<FlushRequest> flush_requests;
+    std::atomic<u64> current_flush_fence{};
+    u64 last_flush_fence{};
+    std::mutex flush_request_mutex;
 
     const bool is_async;
 };

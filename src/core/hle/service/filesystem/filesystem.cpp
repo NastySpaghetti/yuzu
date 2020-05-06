@@ -40,7 +40,10 @@ static FileSys::VirtualDir GetDirectoryRelativeWrapped(FileSys::VirtualDir base,
     if (dir_name.empty() || dir_name == "." || dir_name == "/" || dir_name == "\\")
         return base;
 
-    return base->GetDirectoryRelative(dir_name);
+    const auto res = base->GetDirectoryRelative(dir_name);
+    if (res == nullptr)
+        return base->CreateDirectoryRelative(dir_name);
+    return res;
 }
 
 VfsDirectoryServiceWrapper::VfsDirectoryServiceWrapper(FileSys::VirtualDir backing_)
@@ -58,11 +61,11 @@ ResultCode VfsDirectoryServiceWrapper::CreateFile(const std::string& path_, u64 
     auto file = dir->CreateFile(FileUtil::GetFilename(path));
     if (file == nullptr) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
     if (!file->Resize(size)) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
     return RESULT_SUCCESS;
 }
@@ -80,7 +83,7 @@ ResultCode VfsDirectoryServiceWrapper::DeleteFile(const std::string& path_) cons
     }
     if (!dir->DeleteFile(FileUtil::GetFilename(path))) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
 
     return RESULT_SUCCESS;
@@ -94,7 +97,7 @@ ResultCode VfsDirectoryServiceWrapper::CreateDirectory(const std::string& path_)
     auto new_dir = dir->CreateSubdirectory(FileUtil::GetFilename(path));
     if (new_dir == nullptr) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
     return RESULT_SUCCESS;
 }
@@ -104,7 +107,7 @@ ResultCode VfsDirectoryServiceWrapper::DeleteDirectory(const std::string& path_)
     auto dir = GetDirectoryRelativeWrapped(backing, FileUtil::GetParentPath(path));
     if (!dir->DeleteSubdirectory(FileUtil::GetFilename(path))) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
     return RESULT_SUCCESS;
 }
@@ -114,7 +117,7 @@ ResultCode VfsDirectoryServiceWrapper::DeleteDirectoryRecursively(const std::str
     auto dir = GetDirectoryRelativeWrapped(backing, FileUtil::GetParentPath(path));
     if (!dir->DeleteSubdirectoryRecursive(FileUtil::GetFilename(path))) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
     return RESULT_SUCCESS;
 }
@@ -125,7 +128,7 @@ ResultCode VfsDirectoryServiceWrapper::CleanDirectoryRecursively(const std::stri
 
     if (!dir->CleanSubdirectoryRecursive(FileUtil::GetFilename(sanitized_path))) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
 
     return RESULT_SUCCESS;
@@ -142,7 +145,7 @@ ResultCode VfsDirectoryServiceWrapper::RenameFile(const std::string& src_path_,
             return FileSys::ERROR_PATH_NOT_FOUND;
         if (!src->Rename(FileUtil::GetFilename(dest_path))) {
             // TODO(DarkLordZach): Find a better error code for this
-            return ResultCode(-1);
+            return RESULT_UNKNOWN;
         }
         return RESULT_SUCCESS;
     }
@@ -160,7 +163,7 @@ ResultCode VfsDirectoryServiceWrapper::RenameFile(const std::string& src_path_,
 
     if (!src->GetContainingDirectory()->DeleteFile(FileUtil::GetFilename(src_path))) {
         // TODO(DarkLordZach): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
 
     return RESULT_SUCCESS;
@@ -177,7 +180,7 @@ ResultCode VfsDirectoryServiceWrapper::RenameDirectory(const std::string& src_pa
             return FileSys::ERROR_PATH_NOT_FOUND;
         if (!src->Rename(FileUtil::GetFilename(dest_path))) {
             // TODO(DarkLordZach): Find a better error code for this
-            return ResultCode(-1);
+            return RESULT_UNKNOWN;
         }
         return RESULT_SUCCESS;
     }
@@ -189,7 +192,7 @@ ResultCode VfsDirectoryServiceWrapper::RenameDirectory(const std::string& src_pa
                src_path, dest_path);
 
     // TODO(DarkLordZach): Find a better error code for this
-    return ResultCode(-1);
+    return RESULT_UNKNOWN;
 }
 
 ResultVal<FileSys::VirtualFile> VfsDirectoryServiceWrapper::OpenFile(const std::string& path_,
@@ -241,7 +244,7 @@ ResultVal<FileSys::EntryType> VfsDirectoryServiceWrapper::GetEntryType(
     return FileSys::ERROR_PATH_NOT_FOUND;
 }
 
-FileSystemController::FileSystemController() = default;
+FileSystemController::FileSystemController(Core::System& system_) : system{system_} {}
 
 FileSystemController::~FileSystemController() = default;
 
@@ -287,10 +290,10 @@ ResultVal<FileSys::VirtualFile> FileSystemController::OpenRomFSCurrentProcess() 
 
     if (romfs_factory == nullptr) {
         // TODO(bunnei): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
 
-    return romfs_factory->OpenCurrentProcess();
+    return romfs_factory->OpenCurrentProcess(system.CurrentProcess()->GetTitleID());
 }
 
 ResultVal<FileSys::VirtualFile> FileSystemController::OpenRomFS(
@@ -300,7 +303,7 @@ ResultVal<FileSys::VirtualFile> FileSystemController::OpenRomFS(
 
     if (romfs_factory == nullptr) {
         // TODO(bunnei): Find a better error code for this
-        return ResultCode(-1);
+        return RESULT_UNKNOWN;
     }
 
     return romfs_factory->Open(title_id, storage_id, type);
@@ -447,11 +450,12 @@ FileSys::SaveDataSize FileSystemController::ReadSaveDataSize(FileSys::SaveDataTy
         FileSys::SaveDataSize new_size{SUFFICIENT_SAVE_DATA_SIZE, SUFFICIENT_SAVE_DATA_SIZE};
 
         FileSys::NACP nacp;
-        const auto res = Core::System::GetInstance().GetAppLoader().ReadControlData(nacp);
+        const auto res = system.GetAppLoader().ReadControlData(nacp);
 
         if (res != Loader::ResultStatus::Success) {
-            FileSys::PatchManager pm{Core::CurrentProcess()->GetTitleID()};
-            auto [nacp_unique, discard] = pm.GetControlMetadata();
+            FileSys::PatchManager pm{system.CurrentProcess()->GetTitleID()};
+            const auto metadata = pm.GetControlMetadata();
+            const auto& nacp_unique = metadata.first;
 
             if (nacp_unique != nullptr) {
                 new_size = {nacp_unique->GetDefaultNormalSaveSize(),
@@ -702,10 +706,10 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
     if (bis_factory == nullptr) {
         bis_factory =
             std::make_unique<FileSys::BISFactory>(nand_directory, load_directory, dump_directory);
-        Core::System::GetInstance().RegisterContentProvider(
-            FileSys::ContentProviderUnionSlot::SysNAND, bis_factory->GetSystemNANDContents());
-        Core::System::GetInstance().RegisterContentProvider(
-            FileSys::ContentProviderUnionSlot::UserNAND, bis_factory->GetUserNANDContents());
+        system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::SysNAND,
+                                       bis_factory->GetSystemNANDContents());
+        system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::UserNAND,
+                                       bis_factory->GetUserNANDContents());
     }
 
     if (save_data_factory == nullptr) {
@@ -714,9 +718,17 @@ void FileSystemController::CreateFactories(FileSys::VfsFilesystem& vfs, bool ove
 
     if (sdmc_factory == nullptr) {
         sdmc_factory = std::make_unique<FileSys::SDMCFactory>(std::move(sd_directory));
-        Core::System::GetInstance().RegisterContentProvider(FileSys::ContentProviderUnionSlot::SDMC,
-                                                            sdmc_factory->GetSDMCContents());
+        system.RegisterContentProvider(FileSys::ContentProviderUnionSlot::SDMC,
+                                       sdmc_factory->GetSDMCContents());
     }
+
+    sysdata_imported_dir =
+        vfs.CreateDirectory(FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir) + "imported",
+                            FileSys::Mode::ReadWrite);
+}
+
+FileSys::VirtualDir FileSystemController::GetSysdataImportedDirectory() const {
+    return sysdata_imported_dir;
 }
 
 void InstallInterfaces(Core::System& system) {

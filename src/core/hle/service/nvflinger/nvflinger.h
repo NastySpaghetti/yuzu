@@ -54,6 +54,9 @@ public:
     /// If an invalid display ID is specified, then an empty optional is returned.
     std::optional<u64> CreateLayer(u64 display_id);
 
+    /// Closes a layer on all displays for the given layer ID.
+    void CloseLayer(u64 layer_id);
+
     /// Finds the buffer queue ID of the specified layer in the specified display.
     ///
     /// If an invalid display ID or layer ID is provided, then an empty optional is returned.
@@ -62,7 +65,7 @@ public:
     /// Gets the vsync event for the specified display.
     ///
     /// If an invalid display ID is provided, then nullptr is returned.
-    Kernel::SharedPtr<Kernel::ReadableEvent> FindVsyncEvent(u64 display_id) const;
+    std::shared_ptr<Kernel::ReadableEvent> FindVsyncEvent(u64 display_id) const;
 
     /// Obtains a buffer queue identified by the ID.
     BufferQueue& FindBufferQueue(u32 id);
@@ -103,7 +106,7 @@ private:
     u32 swap_interval = 1;
 
     /// Event that handles screen composition.
-    Core::Timing::EventType* composition_event;
+    std::shared_ptr<Core::Timing::EventType> composition_event;
 
     Core::System& system;
 };

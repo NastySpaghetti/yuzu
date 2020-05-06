@@ -22,12 +22,13 @@ class Config;
 class EmuThread;
 class GameList;
 class GImageInfo;
-class GraphicsBreakPointsWidget;
 class GRenderWindow;
 class LoadingScreen;
 class MicroProfileDialog;
 class ProfilerWidget;
 class QLabel;
+class QPushButton;
+class QProgressDialog;
 class WaitTreeWidget;
 enum class GameListOpenTarget;
 class GameListPlaceholder;
@@ -41,10 +42,6 @@ class ContentProvider;
 class ManualContentProvider;
 class VfsFilesystem;
 } // namespace FileSys
-
-namespace Tegra {
-class DebugContext;
-}
 
 enum class EmulatedDirectoryTarget {
     NAND,
@@ -81,6 +78,9 @@ public:
     ~GMainWindow() override;
 
     std::unique_ptr<DiscordRPC::DiscordInterface> discord_rpc;
+
+    bool DropAction(QDropEvent* event);
+    void AcceptDropEvent(QDropEvent* event);
 
 signals:
 
@@ -119,6 +119,7 @@ public slots:
     void SoftwareKeyboardGetText(const Core::Frontend::SoftwareKeyboardParameters& parameters);
     void SoftwareKeyboardInvokeCheckDialog(std::u16string error_message);
     void WebBrowserOpenPage(std::string_view filename, std::string_view arguments);
+    void OnAppFocusStateChanged(Qt::ApplicationState state);
 
 private:
     void InitializeWidgets();
@@ -134,13 +135,13 @@ private:
     void PreventOSSleep();
     void AllowOSSleep();
 
-    QStringList GetUnsupportedGLExtensions();
     bool LoadROM(const QString& filename);
     void BootGame(const QString& filename);
     void ShutdownGame();
 
     void ShowTelemetryCallout();
     void SetDiscordEnabled(bool state);
+    void LoadAmiibo(const QString& filename);
 
     void SelectAndSetCurrentUser();
 
@@ -183,13 +184,16 @@ private slots:
     void OnMenuReportCompatibility();
     /// Called whenever a user selects a game in the game list widget.
     void OnGameListLoadFile(QString game_path);
-    void OnGameListOpenFolder(u64 program_id, GameListOpenTarget target);
+    void OnGameListOpenFolder(GameListOpenTarget target, const std::string& game_path);
     void OnTransferableShaderCacheOpenFile(u64 program_id);
-    void OnResolutionProfileOpenFile(u64 program_id);
     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path);
     void OnGameListCopyTID(u64 program_id);
     void OnGameListNavigateToGamedbEntry(u64 program_id,
                                          const CompatibilityList& compatibility_list);
+    void OnClearImportedSysdata();
+    void OnImportDirectorySystemUpdate();
+    void OnImportCartridgeSystemUpdate();
+    void OnViewSystemArchiveStatus();
     void OnGameListOpenDirectory(const QString& directory);
     void OnGameListAddDirectory();
     void OnGameListShowList(bool show);
@@ -197,8 +201,6 @@ private slots:
     void OnMenuLoadFile();
     void OnMenuLoadFolder();
     void OnMenuInstallToNAND();
-    /// Called whenever a user select the "File->Select -- Directory" where -- is NAND or SD Card
-    void OnMenuSelectEmulatedDirectory(EmulatedDirectoryTarget target);
     void OnMenuRecentFile();
     void OnConfigure();
     void OnLoadAmiibo();
@@ -211,6 +213,7 @@ private slots:
     void ShowFullscreen();
     void HideFullscreen();
     void ToggleWindowMode();
+    void ResetWindowSize();
     void OnCaptureScreenshot();
     void OnCoreError(Core::System::ResultStatus, std::string);
     void OnReinitializeKeys(ReinitializeKeyBehavior behavior);
@@ -219,10 +222,10 @@ private:
     std::optional<u64> SelectRomFSDumpTarget(const FileSys::ContentProvider&, u64 program_id);
     void UpdateWindowTitle(const QString& title_name = {});
     void UpdateStatusBar();
+    void HideMouseCursor();
+    void ShowMouseCursor();
 
     Ui::MainWindow ui;
-
-    std::shared_ptr<Tegra::DebugContext> debug_context;
 
     GRenderWindow* render_window;
     GameList* game_list;
@@ -235,6 +238,9 @@ private:
     QLabel* emu_speed_label = nullptr;
     QLabel* game_fps_label = nullptr;
     QLabel* emu_frametime_label = nullptr;
+    QPushButton* async_status_button = nullptr;
+    QPushButton* renderer_status_button = nullptr;
+    QPushButton* dock_status_button = nullptr;
     QTimer status_bar_update_timer;
 
     std::unique_ptr<Config> config;
@@ -245,6 +251,9 @@ private:
     // The path to the game currently running
     QString game_path;
 
+    bool auto_paused = false;
+    QTimer mouse_hide_timer;
+
     // FS
     std::shared_ptr<FileSys::VfsFilesystem> vfs;
     std::unique_ptr<FileSys::ManualContentProvider> provider;
@@ -252,7 +261,6 @@ private:
     // Debugger panes
     ProfilerWidget* profilerWidget;
     MicroProfileDialog* microProfileDialog;
-    GraphicsBreakPointsWidget* graphicsBreakpointsWidget;
     WaitTreeWidget* waitTreeWidget;
 
     QAction* actions_recent_files[max_recent_files_item];
@@ -262,12 +270,13 @@ private:
 
     HotkeyRegistry hotkey_registry;
 
+    // Install to NAND progress dialog
+    QProgressDialog* install_progress;
+
 protected:
     void dropEvent(QDropEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dragMoveEvent(QDragMoveEvent* event) override;
-
-    // Overrides used to forward signals to the render window when the focus moves out.
-    void keyPressEvent(QKeyEvent* event) override;
-    void keyReleaseEvent(QKeyEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
 };

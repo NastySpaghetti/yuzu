@@ -15,6 +15,10 @@
 #include "core/hle/kernel/writable_event.h"
 #include "core/hle/service/nvdrv/nvdata.h"
 
+namespace Kernel {
+class KernelCore;
+}
+
 namespace Service::NVFlinger {
 
 struct IGBPBuffer {
@@ -44,7 +48,7 @@ public:
         NativeWindowFormat = 2,
     };
 
-    BufferQueue(u32 id, u64 layer_id);
+    explicit BufferQueue(Kernel::KernelCore& kernel, u32 id, u64 layer_id);
     ~BufferQueue();
 
     enum class BufferTransformFlags : u32 {
@@ -83,20 +87,22 @@ public:
                      Service::Nvidia::MultiFence& multi_fence);
     std::optional<std::reference_wrapper<const Buffer>> AcquireBuffer();
     void ReleaseBuffer(u32 slot);
+    void Disconnect();
     u32 Query(QueryType type);
 
     u32 GetId() const {
         return id;
     }
 
-    Kernel::SharedPtr<Kernel::WritableEvent> GetWritableBufferWaitEvent() const;
+    std::shared_ptr<Kernel::WritableEvent> GetWritableBufferWaitEvent() const;
 
-    Kernel::SharedPtr<Kernel::ReadableEvent> GetBufferWaitEvent() const;
+    std::shared_ptr<Kernel::ReadableEvent> GetBufferWaitEvent() const;
 
 private:
     u32 id;
     u64 layer_id;
 
+    std::list<u32> free_buffers;
     std::vector<Buffer> queue;
     std::list<u32> queue_sequence;
     Kernel::EventPair buffer_wait_event;

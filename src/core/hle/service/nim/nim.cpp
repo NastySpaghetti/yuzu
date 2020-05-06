@@ -15,6 +15,66 @@
 
 namespace Service::NIM {
 
+class IShopServiceAsync final : public ServiceFramework<IShopServiceAsync> {
+public:
+    IShopServiceAsync() : ServiceFramework("IShopServiceAsync") {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "Cancel"},
+            {1, nullptr, "GetSize"},
+            {2, nullptr, "Read"},
+            {3, nullptr, "GetErrorCode"},
+            {4, nullptr, "Request"},
+            {5, nullptr, "Prepare"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+};
+
+class IShopServiceAccessor final : public ServiceFramework<IShopServiceAccessor> {
+public:
+    IShopServiceAccessor() : ServiceFramework("IShopServiceAccessor") {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, &IShopServiceAccessor::CreateAsyncInterface, "CreateAsyncInterface"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+
+private:
+    void CreateAsyncInterface(Kernel::HLERequestContext& ctx) {
+        LOG_WARNING(Service_NIM, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(RESULT_SUCCESS);
+        rb.PushIpcInterface<IShopServiceAsync>();
+    }
+};
+
+class IShopServiceAccessServer final : public ServiceFramework<IShopServiceAccessServer> {
+public:
+    IShopServiceAccessServer() : ServiceFramework("IShopServiceAccessServer") {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, &IShopServiceAccessServer::CreateAccessorInterface, "CreateAccessorInterface"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+
+private:
+    void CreateAccessorInterface(Kernel::HLERequestContext& ctx) {
+        LOG_WARNING(Service_NIM, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(RESULT_SUCCESS);
+        rb.PushIpcInterface<IShopServiceAccessor>();
+    }
+};
+
 class NIM final : public ServiceFramework<NIM> {
 public:
     explicit NIM() : ServiceFramework{"nim"} {
@@ -78,7 +138,7 @@ public:
     explicit NIM_ECA() : ServiceFramework{"nim:eca"} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, nullptr, "CreateServerInterface"},
+            {0, &NIM_ECA::CreateServerInterface, "CreateServerInterface"},
             {1, nullptr, "RefreshDebugAvailability"},
             {2, nullptr, "ClearDebugResponse"},
             {3, nullptr, "RegisterDebugResponse"},
@@ -86,6 +146,14 @@ public:
         // clang-format on
 
         RegisterHandlers(functions);
+    }
+
+private:
+    void CreateServerInterface(Kernel::HLERequestContext& ctx) {
+        LOG_WARNING(Service_NIM, "(STUBBED) called");
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(RESULT_SUCCESS);
+        rb.PushIpcInterface<IShopServiceAccessServer>();
     }
 };
 
@@ -116,6 +184,8 @@ public:
             {500, nullptr, "RequestSyncTicket"},
             {501, nullptr, "RequestDownloadTicket"},
             {502, nullptr, "RequestDownloadTicketForPrepurchasedContents"},
+            {503, nullptr, "RequestSyncTicket"},
+            {504, nullptr, "RequestDownloadTicketForPrepurchasedContents2"},
         };
         // clang-format on
 
@@ -141,8 +211,7 @@ public:
 
         auto& kernel = system.Kernel();
         finished_event = Kernel::WritableEvent::CreateEventPair(
-            kernel, Kernel::ResetType::Automatic,
-            "IEnsureNetworkClockAvailabilityService:FinishEvent");
+            kernel, "IEnsureNetworkClockAvailabilityService:FinishEvent");
     }
 
 private:

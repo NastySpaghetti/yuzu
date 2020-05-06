@@ -58,6 +58,8 @@ struct Values {
 
     bool confirm_before_closing;
     bool first_start;
+    bool pause_when_in_background;
+    bool hide_mouse;
 
     bool select_user_on_boot;
 
@@ -88,7 +90,6 @@ struct Values {
     int profile_index;
 
     // Game List
-    bool show_unknown;
     bool show_add_ons;
     uint32_t icon_size;
     uint8_t row_1_text_id;

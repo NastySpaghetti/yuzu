@@ -11,7 +11,7 @@
 #include "common/common_types.h"
 #include "core/arm/arm_interface.h"
 #include "core/hle/kernel/object.h"
-#include "core/hle/kernel/wait_object.h"
+#include "core/hle/kernel/synchronization_object.h"
 #include "core/hle/result.h"
 
 namespace Kernel {
@@ -75,16 +75,41 @@ enum class ThreadActivity : u32 {
     Paused = 1,
 };
 
-class Thread final : public WaitObject {
+enum class ThreadSchedStatus : u32 {
+    None = 0,
+    Paused = 1,
+    Runnable = 2,
+    Exited = 3,
+};
+
+enum class ThreadSchedFlags : u32 {
+    ProcessPauseFlag = 1 << 4,
+    ThreadPauseFlag = 1 << 5,
+    ProcessDebugPauseFlag = 1 << 6,
+    KernelInitPauseFlag = 1 << 8,
+};
+
+enum class ThreadSchedMasks : u32 {
+    LowMask = 0x000f,
+    HighMask = 0xfff0,
+    ForcePauseMask = 0x0070,
+};
+
+class Thread final : public SynchronizationObject {
 public:
-    using MutexWaitingThreads = std::vector<SharedPtr<Thread>>;
+    explicit Thread(KernelCore& kernel);
+    ~Thread() override;
 
-    using ThreadContext = Core::ARM_Interface::ThreadContext;
+    using MutexWaitingThreads = std::vector<std::shared_ptr<Thread>>;
 
-    using ThreadWaitObjects = std::vector<SharedPtr<WaitObject>>;
+    using ThreadContext32 = Core::ARM_Interface::ThreadContext32;
+    using ThreadContext64 = Core::ARM_Interface::ThreadContext64;
 
-    using WakeupCallback = std::function<bool(ThreadWakeupReason reason, SharedPtr<Thread> thread,
-                                              SharedPtr<WaitObject> object, std::size_t index)>;
+    using ThreadSynchronizationObjects = std::vector<std::shared_ptr<SynchronizationObject>>;
+
+    using WakeupCallback =
+        std::function<bool(ThreadWakeupReason reason, std::shared_ptr<Thread> thread,
+                           std::shared_ptr<SynchronizationObject> object, std::size_t index)>;
 
     /**
      * Creates and returns a new thread. The new thread is immediately scheduled
@@ -98,10 +123,10 @@ public:
      * @param owner_process The parent process for the thread
      * @return A shared pointer to the newly created thread
      */
-    static ResultVal<SharedPtr<Thread>> Create(KernelCore& kernel, std::string name,
-                                               VAddr entry_point, u32 priority, u64 arg,
-                                               s32 processor_id, VAddr stack_top,
-                                               Process& owner_process);
+    static ResultVal<std::shared_ptr<Thread>> Create(KernelCore& kernel, std::string name,
+                                                     VAddr entry_point, u32 priority, u64 arg,
+                                                     s32 processor_id, VAddr stack_top,
+                                                     Process& owner_process);
 
     std::string GetName() const override {
         return name;
@@ -122,6 +147,7 @@ public:
 
     bool ShouldWait(const Thread* thread) const override;
     void Acquire(Thread* thread) override;
+    bool IsSignaled() const override;
 
     /**
      * Gets the thread's current priority
@@ -146,10 +172,10 @@ public:
     void SetPriority(u32 priority);
 
     /// Adds a thread to the list of threads that are waiting for a lock held by this thread.
-    void AddMutexWaiter(SharedPtr<Thread> thread);
+    void AddMutexWaiter(std::shared_ptr<Thread> thread);
 
     /// Removes a thread from the list of threads that are waiting for a lock held by this thread.
-    void RemoveMutexWaiter(SharedPtr<Thread> thread);
+    void RemoveMutexWaiter(std::shared_ptr<Thread> thread);
 
     /// Recalculates the current priority taking into account priority inheritance.
     void UpdatePriority();
@@ -209,7 +235,7 @@ public:
      *
      * @param object Object to query the index of.
      */
-    s32 GetWaitObjectIndex(const WaitObject* object) const;
+    s32 GetSynchronizationObjectIndex(std::shared_ptr<SynchronizationObject> object) const;
 
     /**
      * Stops a thread, invalidating it from further use
@@ -248,12 +274,20 @@ public:
         return status == ThreadStatus::WaitSynch;
     }
 
-    ThreadContext& GetContext() {
-        return context;
+    ThreadContext32& GetContext32() {
+        return context_32;
     }
 
-    const ThreadContext& GetContext() const {
-        return context;
+    const ThreadContext32& GetContext32() const {
+        return context_32;
+    }
+
+    ThreadContext64& GetContext64() {
+        return context_64;
+    }
+
+    const ThreadContext64& GetContext64() const {
+        return context_64;
     }
 
     ThreadStatus GetStatus() const {
@@ -278,6 +312,10 @@ public:
         return processor_id;
     }
 
+    void SetProcessorID(s32 new_core) {
+        processor_id = new_core;
+    }
+
     Process* GetOwnerProcess() {
         return owner_process;
     }
@@ -286,20 +324,23 @@ public:
         return owner_process;
     }
 
-    const ThreadWaitObjects& GetWaitObjects() const {
+    const ThreadSynchronizationObjects& GetSynchronizationObjects() const {
         return wait_objects;
     }
 
-    void SetWaitObjects(ThreadWaitObjects objects) {
+    void SetSynchronizationObjects(ThreadSynchronizationObjects objects) {
         wait_objects = std::move(objects);
     }
 
-    void ClearWaitObjects() {
+    void ClearSynchronizationObjects() {
+        for (const auto& waiting_object : wait_objects) {
+            waiting_object->RemoveWaitingThread(SharedFrom(this));
+        }
         wait_objects.clear();
     }
 
     /// Determines whether all the objects this thread is waiting on are ready.
-    bool AllWaitObjectsReady() const;
+    bool AllSynchronizationObjectsReady() const;
 
     const MutexWaitingThreads& GetMutexWaitingThreads() const {
         return wait_mutex_threads;
@@ -309,7 +350,7 @@ public:
         return lock_owner.get();
     }
 
-    void SetLockOwner(SharedPtr<Thread> owner) {
+    void SetLockOwner(std::shared_ptr<Thread> owner) {
         lock_owner = std::move(owner);
     }
 
@@ -363,8 +404,8 @@ public:
      * @pre A valid wakeup callback has been set. Violating this precondition
      *      will cause an assertion to trigger.
      */
-    bool InvokeWakeupCallback(ThreadWakeupReason reason, SharedPtr<Thread> thread,
-                              SharedPtr<WaitObject> object, std::size_t index);
+    bool InvokeWakeupCallback(ThreadWakeupReason reason, std::shared_ptr<Thread> thread,
+                              std::shared_ptr<SynchronizationObject> object, std::size_t index);
 
     u32 GetIdealCore() const {
         return ideal_core;
@@ -383,13 +424,59 @@ public:
     /// Sleeps this thread for the given amount of nanoseconds.
     void Sleep(s64 nanoseconds);
 
+    /// Yields this thread without rebalancing loads.
+    bool YieldSimple();
+
+    /// Yields this thread and does a load rebalancing.
+    bool YieldAndBalanceLoad();
+
+    /// Yields this thread and if the core is left idle, loads are rebalanced
+    bool YieldAndWaitForLoadBalancing();
+
+    void IncrementYieldCount() {
+        yield_count++;
+    }
+
+    u64 GetYieldCount() const {
+        return yield_count;
+    }
+
+    ThreadSchedStatus GetSchedulingStatus() const {
+        return static_cast<ThreadSchedStatus>(scheduling_state &
+                                              static_cast<u32>(ThreadSchedMasks::LowMask));
+    }
+
+    bool IsRunning() const {
+        return is_running;
+    }
+
+    void SetIsRunning(bool value) {
+        is_running = value;
+    }
+
+    bool IsSyncCancelled() const {
+        return is_sync_cancelled;
+    }
+
+    void SetSyncCancelled(bool value) {
+        is_sync_cancelled = value;
+    }
+
+    Handle GetGlobalHandle() const {
+        return global_handle;
+    }
+
 private:
-    explicit Thread(KernelCore& kernel);
-    ~Thread() override;
+    void SetSchedulingStatus(ThreadSchedStatus new_status);
+    void SetCurrentPriority(u32 new_priority);
+    ResultCode SetCoreAndAffinityMask(s32 new_core, u64 new_affinity_mask);
 
-    void ChangeScheduler();
+    void AdjustSchedulingOnStatus(u32 old_flags);
+    void AdjustSchedulingOnPriority(u32 old_priority);
+    void AdjustSchedulingOnAffinity(u64 old_affinity_mask, s32 old_core);
 
-    Core::ARM_Interface::ThreadContext context{};
+    ThreadContext32 context_32{};
+    ThreadContext64 context_64{};
 
     u64 thread_id = 0;
 
@@ -409,6 +496,8 @@ private:
 
     u64 total_cpu_time_ticks = 0; ///< Total CPU running ticks.
     u64 last_running_ticks = 0;   ///< CPU tick when thread was last running
+    u64 yield_count = 0;          ///< Number of redundant yields carried by this thread.
+                                  ///< a redundant yield is one where no scheduling is changed
 
     s32 processor_id = 0;
 
@@ -420,13 +509,13 @@ private:
 
     /// Objects that the thread is waiting on, in the same order as they were
     /// passed to WaitSynchronization.
-    ThreadWaitObjects wait_objects;
+    ThreadSynchronizationObjects wait_objects;
 
     /// List of threads that are waiting for a mutex that is held by this thread.
     MutexWaitingThreads wait_mutex_threads;
 
     /// Thread that owns the lock that this thread is waiting for.
-    SharedPtr<Thread> lock_owner;
+    std::shared_ptr<Thread> lock_owner;
 
     /// If waiting on a ConditionVariable, this is the ConditionVariable address
     VAddr condvar_wait_address = 0;
@@ -439,7 +528,7 @@ private:
     VAddr arb_wait_address{0};
 
     /// Handle used as userdata to reference this object when inserting into the CoreTiming queue.
-    Handle callback_handle = 0;
+    Handle global_handle = 0;
 
     /// Callback that will be invoked when the thread is resumed from a waiting state. If the thread
     /// was waiting via WaitSynchronization then the object will be the last object that became
@@ -452,6 +541,14 @@ private:
     u64 affinity_mask{0x1};
 
     ThreadActivity activity = ThreadActivity::Normal;
+
+    s32 ideal_core_override = -1;
+    u64 affinity_mask_override = 0x1;
+    u32 affinity_override_count = 0;
+
+    u32 scheduling_state = 0;
+    bool is_running = false;
+    bool is_sync_cancelled = false;
 
     std::string name;
 };

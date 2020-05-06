@@ -21,10 +21,13 @@ public:
         static const FunctionInfo functions[] = {
             {10100, &PlayReport::SaveReport<Core::Reporter::PlayReportType::Old>, "SaveReportOld"},
             {10101, &PlayReport::SaveReportWithUser<Core::Reporter::PlayReportType::Old>, "SaveReportWithUserOld"},
-            {10102, &PlayReport::SaveReport<Core::Reporter::PlayReportType::New>, "SaveReport"},
-            {10103, &PlayReport::SaveReportWithUser<Core::Reporter::PlayReportType::New>, "SaveReportWithUser"},
+            {10102, &PlayReport::SaveReport<Core::Reporter::PlayReportType::Old2>, "SaveReportOld2"},
+            {10103, &PlayReport::SaveReportWithUser<Core::Reporter::PlayReportType::Old2>, "SaveReportWithUserOld2"},
+            {10104, nullptr, "SaveReport"},
+            {10105, nullptr, "SaveReportWithUser"},
             {10200, nullptr, "RequestImmediateTransmission"},
             {10300, nullptr, "GetTransmissionStatus"},
+            {10400, nullptr, "GetSystemSessionId"},
             {20100, &PlayReport::SaveSystemReport, "SaveSystemReport"},
             {20101, &PlayReport::SaveSystemReportWithUser, "SaveSystemReportWithUser"},
             {20200, nullptr, "SetOperationMode"},
@@ -34,8 +37,10 @@ public:
             {30400, nullptr, "GetStatistics"},
             {30401, nullptr, "GetThroughputHistory"},
             {30500, nullptr, "GetLastUploadError"},
+            {30600, nullptr, "GetApplicationUploadSummary"},
             {40100, nullptr, "IsUserAgreementCheckEnabled"},
             {40101, nullptr, "SetUserAgreementCheckEnabled"},
+            {50100, nullptr, "ReadAllApplicationReportFiles"},
             {90100, nullptr, "ReadAllReportFiles"},
         };
         // clang-format on
@@ -49,16 +54,16 @@ private:
         IPC::RequestParser rp{ctx};
         const auto process_id = rp.PopRaw<u64>();
 
-        const auto data1 = ctx.ReadBuffer(0);
-        const auto data2 = ctx.ReadBuffer(1);
+        std::vector<std::vector<u8>> data{ctx.ReadBuffer(0)};
+        if constexpr (Type == Core::Reporter::PlayReportType::Old2) {
+            data.emplace_back(ctx.ReadBuffer(1));
+        }
 
-        LOG_DEBUG(Service_PREPO,
-                  "called, type={:02X}, process_id={:016X}, data1_size={:016X}, data2_size={:016X}",
-                  static_cast<u8>(Type), process_id, data1.size(), data2.size());
+        LOG_DEBUG(Service_PREPO, "called, type={:02X}, process_id={:016X}, data1_size={:016X}",
+                  static_cast<u8>(Type), process_id, data[0].size());
 
         const auto& reporter{system.GetReporter()};
-        reporter.SavePlayReport(Type, system.CurrentProcess()->GetTitleID(), {data1, data2},
-                                process_id);
+        reporter.SavePlayReport(Type, system.CurrentProcess()->GetTitleID(), data, process_id);
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(RESULT_SUCCESS);
@@ -69,19 +74,19 @@ private:
         IPC::RequestParser rp{ctx};
         const auto user_id = rp.PopRaw<u128>();
         const auto process_id = rp.PopRaw<u64>();
-
-        const auto data1 = ctx.ReadBuffer(0);
-        const auto data2 = ctx.ReadBuffer(1);
+        std::vector<std::vector<u8>> data{ctx.ReadBuffer(0)};
+        if constexpr (Type == Core::Reporter::PlayReportType::Old2) {
+            data.emplace_back(ctx.ReadBuffer(1));
+        }
 
         LOG_DEBUG(
             Service_PREPO,
-            "called, type={:02X}, user_id={:016X}{:016X}, process_id={:016X}, data1_size={:016X}, "
-            "data2_size={:016X}",
-            static_cast<u8>(Type), user_id[1], user_id[0], process_id, data1.size(), data2.size());
+            "called, type={:02X}, user_id={:016X}{:016X}, process_id={:016X}, data1_size={:016X}",
+            static_cast<u8>(Type), user_id[1], user_id[0], process_id, data[0].size());
 
         const auto& reporter{system.GetReporter()};
-        reporter.SavePlayReport(Type, system.CurrentProcess()->GetTitleID(), {data1, data2},
-                                process_id, user_id);
+        reporter.SavePlayReport(Type, system.CurrentProcess()->GetTitleID(), data, process_id,
+                                user_id);
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(RESULT_SUCCESS);

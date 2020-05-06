@@ -13,25 +13,27 @@
 #include "common/common_types.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/renderer_opengl/gl_resource_manager.h"
-#include "video_core/renderer_opengl/gl_state.h"
 #include "video_core/renderer_opengl/gl_texture_cache.h"
 
 namespace OpenGL {
 
-struct alignas(sizeof(u64)) FramebufferCacheKey {
-    bool stencil_enable = false;
-    u16 colors_count = 0;
+constexpr std::size_t BitsPerAttachment = 4;
 
-    std::array<GLenum, Tegra::Engines::Maxwell3D::Regs::NumRenderTargets> color_attachments{};
-    std::array<View, Tegra::Engines::Maxwell3D::Regs::NumRenderTargets> colors;
+struct FramebufferCacheKey {
     View zeta;
+    std::array<View, Tegra::Engines::Maxwell3D::Regs::NumRenderTargets> colors;
+    u32 color_attachments = 0;
 
-    std::size_t Hash() const;
+    std::size_t Hash() const noexcept;
 
-    bool operator==(const FramebufferCacheKey& rhs) const;
+    bool operator==(const FramebufferCacheKey& rhs) const noexcept;
 
-    bool operator!=(const FramebufferCacheKey& rhs) const {
+    bool operator!=(const FramebufferCacheKey& rhs) const noexcept {
         return !operator==(rhs);
+    }
+
+    void SetAttachment(std::size_t index, u32 attachment) {
+        color_attachments |= attachment << (BitsPerAttachment * index);
     }
 };
 
@@ -60,7 +62,6 @@ public:
 private:
     OGLFramebuffer CreateFramebuffer(const FramebufferCacheKey& key);
 
-    OpenGLState local_state;
     std::unordered_map<FramebufferCacheKey, OGLFramebuffer> cache;
 };
 

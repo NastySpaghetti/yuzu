@@ -13,10 +13,14 @@
 #include "common/common_types.h"
 #include "video_core/shader/ast.h"
 #include "video_core/shader/control_flow.h"
+#include "video_core/shader/memory_util.h"
+#include "video_core/shader/registry.h"
 #include "video_core/shader/shader_ir.h"
 
 namespace VideoCommon::Shader {
+
 namespace {
+
 using Tegra::Shader::Instruction;
 using Tegra::Shader::OpCode;
 
@@ -35,14 +39,20 @@ struct BlockStack {
     std::stack<u32> pbk_stack{};
 };
 
-struct BlockBranchInfo {
-    Condition condition{};
-    s32 address{exit_branch};
-    bool kill{};
-    bool is_sync{};
-    bool is_brk{};
-    bool ignore{};
-};
+template <typename T, typename... Args>
+BlockBranchInfo MakeBranchInfo(Args&&... args) {
+    static_assert(std::is_convertible_v<T, BranchData>);
+    return std::make_shared<BranchData>(T(std::forward<Args>(args)...));
+}
+
+bool BlockBranchIsIgnored(BlockBranchInfo first) {
+    bool ignore = false;
+    if (std::holds_alternative<SingleBranch>(*first)) {
+        const auto branch = std::get_if<SingleBranch>(first.get());
+        ignore = branch->ignore;
+    }
+    return ignore;
+}
 
 struct BlockInfo {
     u32 start{};
@@ -56,22 +66,21 @@ struct BlockInfo {
 };
 
 struct CFGRebuildState {
-    explicit CFGRebuildState(const ProgramCode& program_code, const std::size_t program_size,
-                             const u32 start)
-        : start{start}, program_code{program_code}, program_size{program_size} {}
+    explicit CFGRebuildState(const ProgramCode& program_code, u32 start, Registry& registry)
+        : program_code{program_code}, registry{registry}, start{start} {}
 
-    u32 start{};
-    std::vector<BlockInfo> block_info{};
-    std::list<u32> inspect_queries{};
-    std::list<Query> queries{};
-    std::unordered_map<u32, u32> registered{};
-    std::set<u32> labels{};
-    std::map<u32, u32> ssy_labels{};
-    std::map<u32, u32> pbk_labels{};
-    std::unordered_map<u32, BlockStack> stacks{};
     const ProgramCode& program_code;
-    const std::size_t program_size;
-    ASTManager* manager;
+    Registry& registry;
+    u32 start{};
+    std::vector<BlockInfo> block_info;
+    std::list<u32> inspect_queries;
+    std::list<Query> queries;
+    std::unordered_map<u32, u32> registered;
+    std::set<u32> labels;
+    std::map<u32, u32> ssy_labels;
+    std::map<u32, u32> pbk_labels;
+    std::unordered_map<u32, BlockStack> stacks;
+    ASTManager* manager{};
 };
 
 enum class BlockCollision : u32 { None, Found, Inside };
@@ -104,18 +113,7 @@ BlockInfo& CreateBlockInfo(CFGRebuildState& state, u32 start, u32 end) {
 }
 
 Pred GetPredicate(u32 index, bool negated) {
-    return static_cast<Pred>(index + (negated ? 8 : 0));
-}
-
-/**
- * Returns whether the instruction at the specified offset is a 'sched' instruction.
- * Sched instructions always appear before a sequence of 3 instructions.
- */
-constexpr bool IsSchedInstruction(u32 offset, u32 main_offset) {
-    constexpr u32 SchedPeriod = 4;
-    u32 absolute_offset = offset - main_offset;
-
-    return (absolute_offset % SchedPeriod) == 0;
+    return static_cast<Pred>(static_cast<u64>(index) + (negated ? 8ULL : 0ULL));
 }
 
 enum class ParseResult : u32 {
@@ -124,10 +122,122 @@ enum class ParseResult : u32 {
     AbnormalFlow,
 };
 
+struct BranchIndirectInfo {
+    u32 buffer{};
+    u32 offset{};
+    u32 entries{};
+    s32 relative_position{};
+};
+
+struct BufferInfo {
+    u32 index;
+    u32 offset;
+};
+
+std::optional<std::pair<s32, u64>> GetBRXInfo(const CFGRebuildState& state, u32& pos) {
+    const Instruction instr = state.program_code[pos];
+    const auto opcode = OpCode::Decode(instr);
+    if (opcode->get().GetId() != OpCode::Id::BRX) {
+        return std::nullopt;
+    }
+    if (instr.brx.constant_buffer != 0) {
+        return std::nullopt;
+    }
+    --pos;
+    return std::make_pair(instr.brx.GetBranchExtend(), instr.gpr8.Value());
+}
+
+template <typename Result, typename TestCallable, typename PackCallable>
+// requires std::predicate<TestCallable, Instruction, const OpCode::Matcher&>
+// requires std::invocable<PackCallable, Instruction, const OpCode::Matcher&>
+std::optional<Result> TrackInstruction(const CFGRebuildState& state, u32& pos, TestCallable test,
+                                       PackCallable pack) {
+    for (; pos >= state.start; --pos) {
+        if (IsSchedInstruction(pos, state.start)) {
+            continue;
+        }
+        const Instruction instr = state.program_code[pos];
+        const auto opcode = OpCode::Decode(instr);
+        if (!opcode) {
+            continue;
+        }
+        if (test(instr, opcode->get())) {
+            --pos;
+            return std::make_optional(pack(instr, opcode->get()));
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<BufferInfo, u64>> TrackLDC(const CFGRebuildState& state, u32& pos,
+                                                   u64 brx_tracked_register) {
+    return TrackInstruction<std::pair<BufferInfo, u64>>(
+        state, pos,
+        [brx_tracked_register](auto instr, const auto& opcode) {
+            return opcode.GetId() == OpCode::Id::LD_C &&
+                   instr.gpr0.Value() == brx_tracked_register &&
+                   instr.ld_c.type.Value() == Tegra::Shader::UniformType::Single;
+        },
+        [](auto instr, const auto& opcode) {
+            const BufferInfo info = {static_cast<u32>(instr.cbuf36.index.Value()),
+                                     static_cast<u32>(instr.cbuf36.GetOffset())};
+            return std::make_pair(info, instr.gpr8.Value());
+        });
+}
+
+std::optional<u64> TrackSHLRegister(const CFGRebuildState& state, u32& pos,
+                                    u64 ldc_tracked_register) {
+    return TrackInstruction<u64>(state, pos,
+                                 [ldc_tracked_register](auto instr, const auto& opcode) {
+                                     return opcode.GetId() == OpCode::Id::SHL_IMM &&
+                                            instr.gpr0.Value() == ldc_tracked_register;
+                                 },
+                                 [](auto instr, const auto&) { return instr.gpr8.Value(); });
+}
+
+std::optional<u32> TrackIMNMXValue(const CFGRebuildState& state, u32& pos,
+                                   u64 shl_tracked_register) {
+    return TrackInstruction<u32>(state, pos,
+                                 [shl_tracked_register](auto instr, const auto& opcode) {
+                                     return opcode.GetId() == OpCode::Id::IMNMX_IMM &&
+                                            instr.gpr0.Value() == shl_tracked_register;
+                                 },
+                                 [](auto instr, const auto&) {
+                                     return static_cast<u32>(instr.alu.GetSignedImm20_20() + 1);
+                                 });
+}
+
+std::optional<BranchIndirectInfo> TrackBranchIndirectInfo(const CFGRebuildState& state, u32 pos) {
+    const auto brx_info = GetBRXInfo(state, pos);
+    if (!brx_info) {
+        return std::nullopt;
+    }
+    const auto [relative_position, brx_tracked_register] = *brx_info;
+
+    const auto ldc_info = TrackLDC(state, pos, brx_tracked_register);
+    if (!ldc_info) {
+        return std::nullopt;
+    }
+    const auto [buffer_info, ldc_tracked_register] = *ldc_info;
+
+    const auto shl_tracked_register = TrackSHLRegister(state, pos, ldc_tracked_register);
+    if (!shl_tracked_register) {
+        return std::nullopt;
+    }
+
+    const auto entries = TrackIMNMXValue(state, pos, *shl_tracked_register);
+    if (!entries) {
+        return std::nullopt;
+    }
+
+    return BranchIndirectInfo{buffer_info.index, buffer_info.offset, *entries, relative_position};
+}
+
 std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address) {
     u32 offset = static_cast<u32>(address);
-    const u32 end_address = static_cast<u32>(state.program_size / sizeof(Instruction));
+    const u32 end_address = static_cast<u32>(state.program_code.size());
     ParseInfo parse_info{};
+    SingleBranch single_branch{};
 
     const auto insert_label = [](CFGRebuildState& state, u32 address) {
         const auto pair = state.labels.emplace(address);
@@ -140,13 +250,14 @@ std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address)
         if (offset >= end_address) {
             // ASSERT_OR_EXECUTE can't be used, as it ignores the break
             ASSERT_MSG(false, "Shader passed the current limit!");
-            parse_info.branch_info.address = exit_branch;
-            parse_info.branch_info.ignore = false;
+
+            single_branch.address = exit_branch;
+            single_branch.ignore = false;
             break;
         }
         if (state.registered.count(offset) != 0) {
-            parse_info.branch_info.address = offset;
-            parse_info.branch_info.ignore = true;
+            single_branch.address = offset;
+            single_branch.ignore = true;
             break;
         }
         if (IsSchedInstruction(offset, state.start)) {
@@ -163,24 +274,26 @@ std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address)
         switch (opcode->get().GetId()) {
         case OpCode::Id::EXIT: {
             const auto pred_index = static_cast<u32>(instr.pred.pred_index);
-            parse_info.branch_info.condition.predicate =
-                GetPredicate(pred_index, instr.negate_pred != 0);
-            if (parse_info.branch_info.condition.predicate == Pred::NeverExecute) {
+            single_branch.condition.predicate = GetPredicate(pred_index, instr.negate_pred != 0);
+            if (single_branch.condition.predicate == Pred::NeverExecute) {
                 offset++;
                 continue;
             }
             const ConditionCode cc = instr.flow_condition_code;
-            parse_info.branch_info.condition.cc = cc;
+            single_branch.condition.cc = cc;
             if (cc == ConditionCode::F) {
                 offset++;
                 continue;
             }
-            parse_info.branch_info.address = exit_branch;
-            parse_info.branch_info.kill = false;
-            parse_info.branch_info.is_sync = false;
-            parse_info.branch_info.is_brk = false;
-            parse_info.branch_info.ignore = false;
+            single_branch.address = exit_branch;
+            single_branch.kill = false;
+            single_branch.is_sync = false;
+            single_branch.is_brk = false;
+            single_branch.ignore = false;
             parse_info.end_address = offset;
+            parse_info.branch_info = MakeBranchInfo<SingleBranch>(
+                single_branch.condition, single_branch.address, single_branch.kill,
+                single_branch.is_sync, single_branch.is_brk, single_branch.ignore);
 
             return {ParseResult::ControlCaught, parse_info};
         }
@@ -189,99 +302,107 @@ std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address)
                 return {ParseResult::AbnormalFlow, parse_info};
             }
             const auto pred_index = static_cast<u32>(instr.pred.pred_index);
-            parse_info.branch_info.condition.predicate =
-                GetPredicate(pred_index, instr.negate_pred != 0);
-            if (parse_info.branch_info.condition.predicate == Pred::NeverExecute) {
+            single_branch.condition.predicate = GetPredicate(pred_index, instr.negate_pred != 0);
+            if (single_branch.condition.predicate == Pred::NeverExecute) {
                 offset++;
                 continue;
             }
             const ConditionCode cc = instr.flow_condition_code;
-            parse_info.branch_info.condition.cc = cc;
+            single_branch.condition.cc = cc;
             if (cc == ConditionCode::F) {
                 offset++;
                 continue;
             }
             const u32 branch_offset = offset + instr.bra.GetBranchTarget();
             if (branch_offset == 0) {
-                parse_info.branch_info.address = exit_branch;
+                single_branch.address = exit_branch;
             } else {
-                parse_info.branch_info.address = branch_offset;
+                single_branch.address = branch_offset;
             }
             insert_label(state, branch_offset);
-            parse_info.branch_info.kill = false;
-            parse_info.branch_info.is_sync = false;
-            parse_info.branch_info.is_brk = false;
-            parse_info.branch_info.ignore = false;
+            single_branch.kill = false;
+            single_branch.is_sync = false;
+            single_branch.is_brk = false;
+            single_branch.ignore = false;
             parse_info.end_address = offset;
+            parse_info.branch_info = MakeBranchInfo<SingleBranch>(
+                single_branch.condition, single_branch.address, single_branch.kill,
+                single_branch.is_sync, single_branch.is_brk, single_branch.ignore);
 
             return {ParseResult::ControlCaught, parse_info};
         }
         case OpCode::Id::SYNC: {
             const auto pred_index = static_cast<u32>(instr.pred.pred_index);
-            parse_info.branch_info.condition.predicate =
-                GetPredicate(pred_index, instr.negate_pred != 0);
-            if (parse_info.branch_info.condition.predicate == Pred::NeverExecute) {
+            single_branch.condition.predicate = GetPredicate(pred_index, instr.negate_pred != 0);
+            if (single_branch.condition.predicate == Pred::NeverExecute) {
                 offset++;
                 continue;
             }
             const ConditionCode cc = instr.flow_condition_code;
-            parse_info.branch_info.condition.cc = cc;
+            single_branch.condition.cc = cc;
             if (cc == ConditionCode::F) {
                 offset++;
                 continue;
             }
-            parse_info.branch_info.address = unassigned_branch;
-            parse_info.branch_info.kill = false;
-            parse_info.branch_info.is_sync = true;
-            parse_info.branch_info.is_brk = false;
-            parse_info.branch_info.ignore = false;
+            single_branch.address = unassigned_branch;
+            single_branch.kill = false;
+            single_branch.is_sync = true;
+            single_branch.is_brk = false;
+            single_branch.ignore = false;
             parse_info.end_address = offset;
+            parse_info.branch_info = MakeBranchInfo<SingleBranch>(
+                single_branch.condition, single_branch.address, single_branch.kill,
+                single_branch.is_sync, single_branch.is_brk, single_branch.ignore);
 
             return {ParseResult::ControlCaught, parse_info};
         }
         case OpCode::Id::BRK: {
             const auto pred_index = static_cast<u32>(instr.pred.pred_index);
-            parse_info.branch_info.condition.predicate =
-                GetPredicate(pred_index, instr.negate_pred != 0);
-            if (parse_info.branch_info.condition.predicate == Pred::NeverExecute) {
+            single_branch.condition.predicate = GetPredicate(pred_index, instr.negate_pred != 0);
+            if (single_branch.condition.predicate == Pred::NeverExecute) {
                 offset++;
                 continue;
             }
             const ConditionCode cc = instr.flow_condition_code;
-            parse_info.branch_info.condition.cc = cc;
+            single_branch.condition.cc = cc;
             if (cc == ConditionCode::F) {
                 offset++;
                 continue;
             }
-            parse_info.branch_info.address = unassigned_branch;
-            parse_info.branch_info.kill = false;
-            parse_info.branch_info.is_sync = false;
-            parse_info.branch_info.is_brk = true;
-            parse_info.branch_info.ignore = false;
+            single_branch.address = unassigned_branch;
+            single_branch.kill = false;
+            single_branch.is_sync = false;
+            single_branch.is_brk = true;
+            single_branch.ignore = false;
             parse_info.end_address = offset;
+            parse_info.branch_info = MakeBranchInfo<SingleBranch>(
+                single_branch.condition, single_branch.address, single_branch.kill,
+                single_branch.is_sync, single_branch.is_brk, single_branch.ignore);
 
             return {ParseResult::ControlCaught, parse_info};
         }
         case OpCode::Id::KIL: {
             const auto pred_index = static_cast<u32>(instr.pred.pred_index);
-            parse_info.branch_info.condition.predicate =
-                GetPredicate(pred_index, instr.negate_pred != 0);
-            if (parse_info.branch_info.condition.predicate == Pred::NeverExecute) {
+            single_branch.condition.predicate = GetPredicate(pred_index, instr.negate_pred != 0);
+            if (single_branch.condition.predicate == Pred::NeverExecute) {
                 offset++;
                 continue;
             }
             const ConditionCode cc = instr.flow_condition_code;
-            parse_info.branch_info.condition.cc = cc;
+            single_branch.condition.cc = cc;
             if (cc == ConditionCode::F) {
                 offset++;
                 continue;
             }
-            parse_info.branch_info.address = exit_branch;
-            parse_info.branch_info.kill = true;
-            parse_info.branch_info.is_sync = false;
-            parse_info.branch_info.is_brk = false;
-            parse_info.branch_info.ignore = false;
+            single_branch.address = exit_branch;
+            single_branch.kill = true;
+            single_branch.is_sync = false;
+            single_branch.is_brk = false;
+            single_branch.ignore = false;
             parse_info.end_address = offset;
+            parse_info.branch_info = MakeBranchInfo<SingleBranch>(
+                single_branch.condition, single_branch.address, single_branch.kill,
+                single_branch.is_sync, single_branch.is_brk, single_branch.ignore);
 
             return {ParseResult::ControlCaught, parse_info};
         }
@@ -298,7 +419,30 @@ std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address)
             break;
         }
         case OpCode::Id::BRX: {
-            return {ParseResult::AbnormalFlow, parse_info};
+            const auto tmp = TrackBranchIndirectInfo(state, offset);
+            if (!tmp) {
+                LOG_WARNING(HW_GPU, "BRX Track Unsuccesful");
+                return {ParseResult::AbnormalFlow, parse_info};
+            }
+
+            const auto result = *tmp;
+            const s32 pc_target = offset + result.relative_position;
+            std::vector<CaseBranch> branches;
+            for (u32 i = 0; i < result.entries; i++) {
+                auto key = state.registry.ObtainKey(result.buffer, result.offset + i * 4);
+                if (!key) {
+                    return {ParseResult::AbnormalFlow, parse_info};
+                }
+                u32 value = *key;
+                u32 target = static_cast<u32>((value >> 3) + pc_target);
+                insert_label(state, target);
+                branches.emplace_back(value, target);
+            }
+            parse_info.end_address = offset;
+            parse_info.branch_info = MakeBranchInfo<MultiBranch>(
+                static_cast<u32>(instr.gpr8.Value()), std::move(branches));
+
+            return {ParseResult::ControlCaught, parse_info};
         }
         default:
             break;
@@ -306,10 +450,13 @@ std::pair<ParseResult, ParseInfo> ParseCode(CFGRebuildState& state, u32 address)
 
         offset++;
     }
-    parse_info.branch_info.kill = false;
-    parse_info.branch_info.is_sync = false;
-    parse_info.branch_info.is_brk = false;
+    single_branch.kill = false;
+    single_branch.is_sync = false;
+    single_branch.is_brk = false;
     parse_info.end_address = offset - 1;
+    parse_info.branch_info = MakeBranchInfo<SingleBranch>(
+        single_branch.condition, single_branch.address, single_branch.kill, single_branch.is_sync,
+        single_branch.is_brk, single_branch.ignore);
     return {ParseResult::BlockEnd, parse_info};
 }
 
@@ -327,16 +474,17 @@ bool TryInspectAddress(CFGRebuildState& state) {
     }
     case BlockCollision::Inside: {
         // This case is the tricky one:
-        // We need to Split the block in 2 sepparate blocks
+        // We need to split the block into 2 separate blocks
         const u32 end = state.block_info[block_index].end;
         BlockInfo& new_block = CreateBlockInfo(state, address, end);
         BlockInfo& current_block = state.block_info[block_index];
         current_block.end = address - 1;
-        new_block.branch = current_block.branch;
-        BlockBranchInfo forward_branch{};
-        forward_branch.address = address;
-        forward_branch.ignore = true;
-        current_block.branch = forward_branch;
+        new_block.branch = std::move(current_block.branch);
+        BlockBranchInfo forward_branch = MakeBranchInfo<SingleBranch>();
+        const auto branch = std::get_if<SingleBranch>(forward_branch.get());
+        branch->address = address;
+        branch->ignore = true;
+        current_block.branch = std::move(forward_branch);
         return true;
     }
     default:
@@ -350,12 +498,15 @@ bool TryInspectAddress(CFGRebuildState& state) {
 
     BlockInfo& block_info = CreateBlockInfo(state, address, parse_info.end_address);
     block_info.branch = parse_info.branch_info;
-    if (parse_info.branch_info.condition.IsUnconditional()) {
+    if (std::holds_alternative<SingleBranch>(*block_info.branch)) {
+        const auto branch = std::get_if<SingleBranch>(block_info.branch.get());
+        if (branch->condition.IsUnconditional()) {
+            return true;
+        }
+        const u32 fallthrough_address = parse_info.end_address + 1;
+        state.inspect_queries.push_front(fallthrough_address);
         return true;
     }
-
-    const u32 fallthrough_address = parse_info.end_address + 1;
-    state.inspect_queries.push_front(fallthrough_address);
     return true;
 }
 
@@ -393,31 +544,40 @@ bool TryQuery(CFGRebuildState& state) {
     state.queries.pop_front();
     gather_labels(q2.ssy_stack, state.ssy_labels, block);
     gather_labels(q2.pbk_stack, state.pbk_labels, block);
-    if (!block.branch.condition.IsUnconditional()) {
-        q2.address = block.end + 1;
-        state.queries.push_back(q2);
-    }
+    if (std::holds_alternative<SingleBranch>(*block.branch)) {
+        const auto branch = std::get_if<SingleBranch>(block.branch.get());
+        if (!branch->condition.IsUnconditional()) {
+            q2.address = block.end + 1;
+            state.queries.push_back(q2);
+        }
 
-    Query conditional_query{q2};
-    if (block.branch.is_sync) {
-        if (block.branch.address == unassigned_branch) {
-            block.branch.address = conditional_query.ssy_stack.top();
+        Query conditional_query{q2};
+        if (branch->is_sync) {
+            if (branch->address == unassigned_branch) {
+                branch->address = conditional_query.ssy_stack.top();
+            }
+            conditional_query.ssy_stack.pop();
         }
-        conditional_query.ssy_stack.pop();
-    }
-    if (block.branch.is_brk) {
-        if (block.branch.address == unassigned_branch) {
-            block.branch.address = conditional_query.pbk_stack.top();
+        if (branch->is_brk) {
+            if (branch->address == unassigned_branch) {
+                branch->address = conditional_query.pbk_stack.top();
+            }
+            conditional_query.pbk_stack.pop();
         }
-        conditional_query.pbk_stack.pop();
+        conditional_query.address = branch->address;
+        state.queries.push_back(std::move(conditional_query));
+        return true;
     }
-    conditional_query.address = block.branch.address;
-    state.queries.push_back(std::move(conditional_query));
+    const auto multi_branch = std::get_if<MultiBranch>(block.branch.get());
+    for (const auto& branch_case : multi_branch->branches) {
+        Query conditional_query{q2};
+        conditional_query.address = branch_case.address;
+        state.queries.push_back(std::move(conditional_query));
+    }
     return true;
 }
-} // Anonymous namespace
 
-void InsertBranch(ASTManager& mm, const BlockBranchInfo& branch) {
+void InsertBranch(ASTManager& mm, const BlockBranchInfo& branch_info) {
     const auto get_expr = ([&](const Condition& cond) -> Expr {
         Expr result{};
         if (cond.cc != ConditionCode::T) {
@@ -444,15 +604,24 @@ void InsertBranch(ASTManager& mm, const BlockBranchInfo& branch) {
         }
         return MakeExpr<ExprBoolean>(true);
     });
-    if (branch.address < 0) {
-        if (branch.kill) {
-            mm.InsertReturn(get_expr(branch.condition), true);
+    if (std::holds_alternative<SingleBranch>(*branch_info)) {
+        const auto branch = std::get_if<SingleBranch>(branch_info.get());
+        if (branch->address < 0) {
+            if (branch->kill) {
+                mm.InsertReturn(get_expr(branch->condition), true);
+                return;
+            }
+            mm.InsertReturn(get_expr(branch->condition), false);
             return;
         }
-        mm.InsertReturn(get_expr(branch.condition), false);
+        mm.InsertGoto(get_expr(branch->condition), branch->address);
         return;
     }
-    mm.InsertGoto(get_expr(branch.condition), branch.address);
+    const auto multi_branch = std::get_if<MultiBranch>(branch_info.get());
+    for (const auto& branch_case : multi_branch->branches) {
+        mm.InsertGoto(MakeExpr<ExprGprEqual>(multi_branch->gpr, branch_case.cmp_value),
+                      branch_case.address);
+    }
 }
 
 void DecompileShader(CFGRebuildState& state) {
@@ -464,25 +633,28 @@ void DecompileShader(CFGRebuildState& state) {
         if (state.labels.count(block.start) != 0) {
             state.manager->InsertLabel(block.start);
         }
-        u32 end = block.branch.ignore ? block.end + 1 : block.end;
+        const bool ignore = BlockBranchIsIgnored(block.branch);
+        u32 end = ignore ? block.end + 1 : block.end;
         state.manager->InsertBlock(block.start, end);
-        if (!block.branch.ignore) {
+        if (!ignore) {
             InsertBranch(*state.manager, block.branch);
         }
     }
     state.manager->Decompile();
 }
 
-std::unique_ptr<ShaderCharacteristics> ScanFlow(const ProgramCode& program_code, u32 program_size,
-                                                u32 start_address,
-                                                const CompilerSettings& settings) {
+} // Anonymous namespace
+
+std::unique_ptr<ShaderCharacteristics> ScanFlow(const ProgramCode& program_code, u32 start_address,
+                                                const CompilerSettings& settings,
+                                                Registry& registry) {
     auto result_out = std::make_unique<ShaderCharacteristics>();
     if (settings.depth == CompileDepth::BruteForce) {
         result_out->settings.depth = CompileDepth::BruteForce;
-        return std::move(result_out);
+        return result_out;
     }
 
-    CFGRebuildState state{program_code, program_size, start_address};
+    CFGRebuildState state{program_code, start_address, registry};
     // Inspect Code and generate blocks
     state.labels.clear();
     state.labels.emplace(start_address);
@@ -490,7 +662,7 @@ std::unique_ptr<ShaderCharacteristics> ScanFlow(const ProgramCode& program_code,
     while (!state.inspect_queries.empty()) {
         if (!TryInspectAddress(state)) {
             result_out->settings.depth = CompileDepth::BruteForce;
-            return std::move(result_out);
+            return result_out;
         }
     }
 
@@ -530,14 +702,15 @@ std::unique_ptr<ShaderCharacteristics> ScanFlow(const ProgramCode& program_code,
             state.manager->ShowCurrentState("Of Shader");
             state.manager->Clear();
         } else {
-            auto result_out = std::make_unique<ShaderCharacteristics>();
-            result_out->start = start_address;
-            result_out->settings.depth = settings.depth;
-            result_out->manager = std::move(manager);
-            result_out->end = state.block_info.back().end + 1;
-            return std::move(result_out);
+            auto characteristics = std::make_unique<ShaderCharacteristics>();
+            characteristics->start = start_address;
+            characteristics->settings.depth = settings.depth;
+            characteristics->manager = std::move(manager);
+            characteristics->end = state.block_info.back().end + 1;
+            return characteristics;
         }
     }
+
     result_out->start = start_address;
     result_out->settings.depth =
         use_flow_stack ? CompileDepth::FlowStack : CompileDepth::NoFlowStack;
@@ -546,19 +719,18 @@ std::unique_ptr<ShaderCharacteristics> ScanFlow(const ProgramCode& program_code,
         ShaderBlock new_block{};
         new_block.start = block.start;
         new_block.end = block.end;
-        new_block.ignore_branch = block.branch.ignore;
+        new_block.ignore_branch = BlockBranchIsIgnored(block.branch);
         if (!new_block.ignore_branch) {
-            new_block.branch.cond = block.branch.condition;
-            new_block.branch.kills = block.branch.kill;
-            new_block.branch.address = block.branch.address;
+            new_block.branch = block.branch;
         }
         result_out->end = std::max(result_out->end, block.end);
         result_out->blocks.push_back(new_block);
     }
     if (!use_flow_stack) {
         result_out->labels = std::move(state.labels);
-        return std::move(result_out);
+        return result_out;
     }
+
     auto back = result_out->blocks.begin();
     auto next = std::next(back);
     while (next != result_out->blocks.end()) {
@@ -570,6 +742,7 @@ std::unique_ptr<ShaderCharacteristics> ScanFlow(const ProgramCode& program_code,
         back = next;
         ++next;
     }
-    return std::move(result_out);
+
+    return result_out;
 }
 } // namespace VideoCommon::Shader

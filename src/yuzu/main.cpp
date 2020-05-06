@@ -20,13 +20,13 @@
 #include "core/file_sys/vfs.h"
 #include "core/file_sys/vfs_real.h"
 #include "core/frontend/applets/general_frontend.h"
-#include "core/frontend/scope_acquire_window_context.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_ae.h"
 #include "core/hle/service/am/applet_oe.h"
 #include "core/hle/service/am/applets/applets.h"
 #include "core/hle/service/hid/controllers/npad.h"
 #include "core/hle/service/hid/hid.h"
+#include "yuzu/status/system_archive.h"
 
 // These are wrappers to avoid the calls to CreateDirectory and CreateFile because of the Windows
 // defines.
@@ -38,6 +38,10 @@ static FileSys::VirtualDir VfsFilesystemCreateDirectoryWrapper(
 static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::VirtualDir& dir,
                                                           const std::string& path) {
     return dir->CreateFile(path);
+}
+
+static bool VfsDirectoryDeleteFileWrapper(const FileSys::VirtualDir& dir, const std::string& path) {
+    return dir->DeleteFile(path);
 }
 
 #include <fmt/ostream.h>
@@ -83,6 +87,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/savedata_factory.h"
 #include "core/file_sys/submission_package.h"
+#include "core/file_sys/system_archive/importer.h"
 #include "core/frontend/applets/software_keyboard.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/service/am/am.h"
@@ -93,7 +98,6 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "core/perf_stats.h"
 #include "core/settings.h"
 #include "core/telemetry_session.h"
-#include "video_core/debug_utils/debug_utils.h"
 #include "yuzu/about_dialog.h"
 #include "yuzu/bootmanager.h"
 #include "yuzu/compatdb.h"
@@ -101,13 +105,13 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "yuzu/configuration/config.h"
 #include "yuzu/configuration/configure_dialog.h"
 #include "yuzu/debugger/console.h"
-#include "yuzu/debugger/graphics/graphics_breakpoints.h"
 #include "yuzu/debugger/profiler.h"
 #include "yuzu/debugger/wait_tree.h"
 #include "yuzu/discord.h"
 #include "yuzu/game_list.h"
 #include "yuzu/game_list_p.h"
 #include "yuzu/hotkeys.h"
+#include "yuzu/install_dialog.h"
 #include "yuzu/loading_screen.h"
 #include "yuzu/main.h"
 #include "yuzu/uisettings.h"
@@ -137,6 +141,8 @@ __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 #endif
+
+constexpr int default_mouse_timeout = 2500;
 
 constexpr u64 DLC_BASE_TITLE_ID_MASK = 0xFFFFFFFFFFFFE000;
 
@@ -187,8 +193,6 @@ GMainWindow::GMainWindow()
       provider(std::make_unique<FileSys::ManualContentProvider>()) {
     InitializeLogging();
 
-    debug_context = Tegra::DebugContext::Construct();
-
     setAcceptDrops(true);
     ui.setupUi(this);
     statusBar()->hide();
@@ -210,7 +214,13 @@ GMainWindow::GMainWindow()
     ConnectMenuEvents();
     ConnectWidgetEvents();
 
-    LOG_INFO(Frontend, "yuzu Version: {} | {}-{}", Common::g_build_fullname, Common::g_scm_branch,
+    const auto build_id = std::string(Common::g_build_id);
+    const auto fmt = std::string(Common::g_title_bar_format_idle);
+    const auto yuzu_build_version =
+        fmt::format(fmt.empty() ? "yuzu Development Build" : fmt, std::string{}, std::string{},
+                    std::string{}, std::string{}, std::string{}, build_id);
+
+    LOG_INFO(Frontend, "yuzu Version: {} | {}-{}", yuzu_build_version, Common::g_scm_branch,
              Common::g_scm_desc);
 #ifdef ARCHITECTURE_x86_64
     LOG_INFO(Frontend, "Host CPU: {}", Common::GetCPUCaps().cpu_string);
@@ -234,6 +244,14 @@ GMainWindow::GMainWindow()
 
     // Show one-time "callout" messages to the user
     ShowTelemetryCallout();
+
+    // make sure menubar has the arrow cursor instead of inheriting from this
+    ui.menubar->setCursor(QCursor());
+    statusBar()->setCursor(QCursor());
+
+    mouse_hide_timer.setInterval(default_mouse_timeout);
+    connect(&mouse_hide_timer, &QTimer::timeout, this, &GMainWindow::HideMouseCursor);
+    connect(ui.menubar, &QMenuBar::hovered, this, &GMainWindow::ShowMouseCursor);
 
     QStringList args = QApplication::arguments();
     if (args.length() >= 2) {
@@ -458,7 +476,6 @@ void GMainWindow::InitializeWidgets() {
     // Create status bar
     message_label = new QLabel();
     // Configured separately for left alignment
-    message_label->setVisible(false);
     message_label->setFrameStyle(QFrame::NoFrame);
     message_label->setContentsMargins(4, 0, 4, 0);
     message_label->setAlignment(Qt::AlignLeft);
@@ -480,8 +497,73 @@ void GMainWindow::InitializeWidgets() {
         label->setVisible(false);
         label->setFrameStyle(QFrame::NoFrame);
         label->setContentsMargins(4, 0, 4, 0);
-        statusBar()->addPermanentWidget(label, 0);
+        statusBar()->addPermanentWidget(label);
     }
+
+    // Setup Dock button
+    dock_status_button = new QPushButton();
+    dock_status_button->setObjectName(QStringLiteral("TogglableStatusBarButton"));
+    dock_status_button->setFocusPolicy(Qt::NoFocus);
+    connect(dock_status_button, &QPushButton::clicked, [&] {
+        Settings::values.use_docked_mode = !Settings::values.use_docked_mode;
+        dock_status_button->setChecked(Settings::values.use_docked_mode);
+        OnDockedModeChanged(!Settings::values.use_docked_mode, Settings::values.use_docked_mode);
+    });
+    dock_status_button->setText(tr("DOCK"));
+    dock_status_button->setCheckable(true);
+    dock_status_button->setChecked(Settings::values.use_docked_mode);
+    statusBar()->insertPermanentWidget(0, dock_status_button);
+
+    // Setup ASync button
+    async_status_button = new QPushButton();
+    async_status_button->setObjectName(QStringLiteral("TogglableStatusBarButton"));
+    async_status_button->setFocusPolicy(Qt::NoFocus);
+    connect(async_status_button, &QPushButton::clicked, [&] {
+        if (emulation_running) {
+            return;
+        }
+        Settings::values.use_asynchronous_gpu_emulation =
+            !Settings::values.use_asynchronous_gpu_emulation;
+        async_status_button->setChecked(Settings::values.use_asynchronous_gpu_emulation);
+        Settings::Apply();
+    });
+    async_status_button->setText(tr("ASYNC"));
+    async_status_button->setCheckable(true);
+    async_status_button->setChecked(Settings::values.use_asynchronous_gpu_emulation);
+    statusBar()->insertPermanentWidget(0, async_status_button);
+
+    // Setup Renderer API button
+    renderer_status_button = new QPushButton();
+    renderer_status_button->setObjectName(QStringLiteral("RendererStatusBarButton"));
+    renderer_status_button->setCheckable(true);
+    renderer_status_button->setFocusPolicy(Qt::NoFocus);
+    connect(renderer_status_button, &QPushButton::toggled, [=](bool checked) {
+        renderer_status_button->setText(checked ? tr("VULKAN") : tr("OPENGL"));
+    });
+    renderer_status_button->toggle();
+
+#ifndef HAS_VULKAN
+    renderer_status_button->setChecked(false);
+    renderer_status_button->setCheckable(false);
+    renderer_status_button->setDisabled(true);
+#else
+    renderer_status_button->setChecked(Settings::values.renderer_backend ==
+                                       Settings::RendererBackend::Vulkan);
+    connect(renderer_status_button, &QPushButton::clicked, [=] {
+        if (emulation_running) {
+            return;
+        }
+        if (renderer_status_button->isChecked()) {
+            Settings::values.renderer_backend = Settings::RendererBackend::Vulkan;
+        } else {
+            Settings::values.renderer_backend = Settings::RendererBackend::OpenGL;
+        }
+
+        Settings::Apply();
+    });
+#endif // HAS_VULKAN
+    statusBar()->insertPermanentWidget(0, renderer_status_button);
+
     statusBar()->setVisible(true);
     setStyleSheet(QStringLiteral("QStatusBar::item{border: none;}"));
 }
@@ -494,11 +576,6 @@ void GMainWindow::InitializeDebugWidgets() {
     microProfileDialog->hide();
     debug_menu->addAction(microProfileDialog->toggleViewAction());
 #endif
-
-    graphicsBreakpointsWidget = new GraphicsBreakPointsWidget(debug_context, this);
-    addDockWidget(Qt::RightDockWidgetArea, graphicsBreakpointsWidget);
-    graphicsBreakpointsWidget->hide();
-    debug_menu->addAction(graphicsBreakpointsWidget->toggleViewAction());
 
     waitTreeWidget = new WaitTreeWidget(this);
     addDockWidget(Qt::LeftDockWidgetArea, waitTreeWidget);
@@ -535,18 +612,29 @@ void GMainWindow::InitializeHotkeys() {
 
     const QString main_window = QStringLiteral("Main Window");
     const QString load_file = QStringLiteral("Load File");
+    const QString load_amiibo = QStringLiteral("Load Amiibo");
     const QString exit_yuzu = QStringLiteral("Exit yuzu");
+    const QString restart_emulation = QStringLiteral("Restart Emulation");
     const QString stop_emulation = QStringLiteral("Stop Emulation");
     const QString toggle_filter_bar = QStringLiteral("Toggle Filter Bar");
     const QString toggle_status_bar = QStringLiteral("Toggle Status Bar");
     const QString fullscreen = QStringLiteral("Fullscreen");
+    const QString capture_screenshot = QStringLiteral("Capture Screenshot");
 
     ui.action_Load_File->setShortcut(hotkey_registry.GetKeySequence(main_window, load_file));
     ui.action_Load_File->setShortcutContext(
         hotkey_registry.GetShortcutContext(main_window, load_file));
 
+    ui.action_Load_Amiibo->setShortcut(hotkey_registry.GetKeySequence(main_window, load_amiibo));
+    ui.action_Load_Amiibo->setShortcutContext(
+        hotkey_registry.GetShortcutContext(main_window, load_amiibo));
+
     ui.action_Exit->setShortcut(hotkey_registry.GetKeySequence(main_window, exit_yuzu));
     ui.action_Exit->setShortcutContext(hotkey_registry.GetShortcutContext(main_window, exit_yuzu));
+
+    ui.action_Restart->setShortcut(hotkey_registry.GetKeySequence(main_window, restart_emulation));
+    ui.action_Restart->setShortcutContext(
+        hotkey_registry.GetShortcutContext(main_window, restart_emulation));
 
     ui.action_Stop->setShortcut(hotkey_registry.GetKeySequence(main_window, stop_emulation));
     ui.action_Stop->setShortcutContext(
@@ -561,6 +649,11 @@ void GMainWindow::InitializeHotkeys() {
         hotkey_registry.GetKeySequence(main_window, toggle_status_bar));
     ui.action_Show_Status_Bar->setShortcutContext(
         hotkey_registry.GetShortcutContext(main_window, toggle_status_bar));
+
+    ui.action_Capture_Screenshot->setShortcut(
+        hotkey_registry.GetKeySequence(main_window, capture_screenshot));
+    ui.action_Capture_Screenshot->setShortcutContext(
+        hotkey_registry.GetShortcutContext(main_window, capture_screenshot));
 
     connect(hotkey_registry.GetHotkey(main_window, QStringLiteral("Load File"), this),
             &QShortcut::activated, this, &GMainWindow::OnMenuLoadFile);
@@ -633,17 +726,18 @@ void GMainWindow::InitializeHotkeys() {
                 Settings::values.use_docked_mode = !Settings::values.use_docked_mode;
                 OnDockedModeChanged(!Settings::values.use_docked_mode,
                                     Settings::values.use_docked_mode);
+                dock_status_button->setChecked(Settings::values.use_docked_mode);
             });
 }
 
 void GMainWindow::SetDefaultUIGeometry() {
-    // geometry: 55% of the window contents are in the upper screen half, 45% in the lower half
+    // geometry: 53% of the window contents are in the upper screen half, 47% in the lower half
     const QRect screenRect = QApplication::desktop()->screenGeometry(this);
 
     const int w = screenRect.width() * 2 / 3;
-    const int h = screenRect.height() / 2;
+    const int h = screenRect.height() * 2 / 3;
     const int x = (screenRect.x() + screenRect.width()) / 2 - w / 2;
-    const int y = (screenRect.y() + screenRect.height()) / 2 - h * 55 / 100;
+    const int y = (screenRect.y() + screenRect.height()) / 2 - h * 53 / 100;
 
     setGeometry(x, y, w, h);
 }
@@ -675,14 +769,30 @@ void GMainWindow::RestoreUIState() {
     Debugger::ToggleConsole();
 }
 
+void GMainWindow::OnAppFocusStateChanged(Qt::ApplicationState state) {
+    if (!UISettings::values.pause_when_in_background) {
+        return;
+    }
+    if (state != Qt::ApplicationHidden && state != Qt::ApplicationInactive &&
+        state != Qt::ApplicationActive) {
+        LOG_DEBUG(Frontend, "ApplicationState unusual flag: {} ", state);
+    }
+    if (ui.action_Pause->isEnabled() &&
+        (state & (Qt::ApplicationHidden | Qt::ApplicationInactive))) {
+        auto_paused = true;
+        OnPauseGame();
+    } else if (ui.action_Start->isEnabled() && auto_paused && state == Qt::ApplicationActive) {
+        auto_paused = false;
+        OnStartGame();
+    }
+}
+
 void GMainWindow::ConnectWidgetEvents() {
     connect(game_list, &GameList::GameChosen, this, &GMainWindow::OnGameListLoadFile);
     connect(game_list, &GameList::OpenDirectory, this, &GMainWindow::OnGameListOpenDirectory);
     connect(game_list, &GameList::OpenFolderRequested, this, &GMainWindow::OnGameListOpenFolder);
     connect(game_list, &GameList::OpenTransferableShaderCacheRequested, this,
             &GMainWindow::OnTransferableShaderCacheOpenFile);
-    connect(game_list, &GameList::OpenResolutionProfileRequested, this,
-            &GMainWindow::OnResolutionProfileOpenFile);
     connect(game_list, &GameList::DumpRomFSRequested, this, &GMainWindow::OnGameListDumpRomFS);
     connect(game_list, &GameList::CopyTIDRequested, this, &GMainWindow::OnGameListCopyTID);
     connect(game_list, &GameList::NavigateToGamedbEntryRequested, this,
@@ -709,10 +819,6 @@ void GMainWindow::ConnectMenuEvents() {
     connect(ui.action_Load_Folder, &QAction::triggered, this, &GMainWindow::OnMenuLoadFolder);
     connect(ui.action_Install_File_NAND, &QAction::triggered, this,
             &GMainWindow::OnMenuInstallToNAND);
-    connect(ui.action_Select_NAND_Directory, &QAction::triggered, this,
-            [this] { OnMenuSelectEmulatedDirectory(EmulatedDirectoryTarget::NAND); });
-    connect(ui.action_Select_SDMC_Directory, &QAction::triggered, this,
-            [this] { OnMenuSelectEmulatedDirectory(EmulatedDirectoryTarget::SDMC); });
     connect(ui.action_Exit, &QAction::triggered, this, &QMainWindow::close);
     connect(ui.action_Load_Amiibo, &QAction::triggered, this, &GMainWindow::OnLoadAmiibo);
 
@@ -732,6 +838,7 @@ void GMainWindow::ConnectMenuEvents() {
             &GMainWindow::OnDisplayTitleBars);
     connect(ui.action_Show_Filter_Bar, &QAction::triggered, this, &GMainWindow::OnToggleFilterBar);
     connect(ui.action_Show_Status_Bar, &QAction::triggered, statusBar(), &QStatusBar::setVisible);
+    connect(ui.action_Reset_Window_Size, &QAction::triggered, this, &GMainWindow::ResetWindowSize);
 
     // Fullscreen
     ui.action_Fullscreen->setShortcut(
@@ -743,6 +850,16 @@ void GMainWindow::ConnectMenuEvents() {
     // Movie
     connect(ui.action_Capture_Screenshot, &QAction::triggered, this,
             &GMainWindow::OnCaptureScreenshot);
+
+    // Tools
+    connect(ui.actionImport_Directory, &QAction::triggered, this,
+            &GMainWindow::OnImportDirectorySystemUpdate);
+    connect(ui.actionImport_Cartridge, &QAction::triggered, this,
+            &GMainWindow::OnImportCartridgeSystemUpdate);
+    connect(ui.actionClear_Imported, &QAction::triggered, this,
+            &GMainWindow::OnClearImportedSysdata);
+    connect(ui.actionView_Status, &QAction::triggered, this,
+            &GMainWindow::OnViewSystemArchiveStatus);
 
     // Help
     connect(ui.action_Open_yuzu_Folder, &QAction::triggered, this, &GMainWindow::OnOpenYuzuFolder);
@@ -783,74 +900,17 @@ void GMainWindow::AllowOSSleep() {
 #endif
 }
 
-QStringList GMainWindow::GetUnsupportedGLExtensions() {
-    QStringList unsupported_ext;
-
-    if (!GLAD_GL_ARB_buffer_storage) {
-        unsupported_ext.append(QStringLiteral("ARB_buffer_storage"));
-    }
-    if (!GLAD_GL_ARB_direct_state_access) {
-        unsupported_ext.append(QStringLiteral("ARB_direct_state_access"));
-    }
-    if (!GLAD_GL_ARB_vertex_type_10f_11f_11f_rev) {
-        unsupported_ext.append(QStringLiteral("ARB_vertex_type_10f_11f_11f_rev"));
-    }
-    if (!GLAD_GL_ARB_texture_mirror_clamp_to_edge) {
-        unsupported_ext.append(QStringLiteral("ARB_texture_mirror_clamp_to_edge"));
-    }
-    if (!GLAD_GL_ARB_multi_bind) {
-        unsupported_ext.append(QStringLiteral("ARB_multi_bind"));
-    }
-
-    // Extensions required to support some texture formats.
-    if (!GLAD_GL_EXT_texture_compression_s3tc) {
-        unsupported_ext.append(QStringLiteral("EXT_texture_compression_s3tc"));
-    }
-    if (!GLAD_GL_ARB_texture_compression_rgtc) {
-        unsupported_ext.append(QStringLiteral("ARB_texture_compression_rgtc"));
-    }
-    if (!GLAD_GL_ARB_depth_buffer_float) {
-        unsupported_ext.append(QStringLiteral("ARB_depth_buffer_float"));
-    }
-
-    for (const QString& ext : unsupported_ext) {
-        LOG_CRITICAL(Frontend, "Unsupported GL extension: {}", ext.toStdString());
-    }
-
-    return unsupported_ext;
-}
-
 bool GMainWindow::LoadROM(const QString& filename) {
     // Shutdown previous session if the emu thread is still active...
     if (emu_thread != nullptr)
         ShutdownGame();
 
-    render_window->InitRenderTarget();
-
-    {
-        Core::Frontend::ScopeAcquireWindowContext acquire_context{*render_window};
-        if (!gladLoadGL()) {
-            QMessageBox::critical(this, tr("Error while initializing OpenGL 4.3 Core!"),
-                                  tr("Your GPU may not support OpenGL 4.3, or you do not "
-                                     "have the latest graphics driver."));
-            return false;
-        }
-    }
-
-    const QStringList unsupported_gl_extensions = GetUnsupportedGLExtensions();
-    if (!unsupported_gl_extensions.empty()) {
-        QMessageBox::critical(this, tr("Error while initializing OpenGL Core!"),
-                              tr("Your GPU may not support one or more required OpenGL"
-                                 "extensions. Please ensure you have the latest graphics "
-                                 "driver.<br><br>Unsupported extensions:<br>") +
-                                  unsupported_gl_extensions.join(QStringLiteral("<br>")));
+    if (!render_window->InitRenderTarget()) {
         return false;
     }
 
     Core::System& system{Core::System::GetInstance()};
     system.SetFilesystem(vfs);
-
-    system.SetGPUDebugContext(debug_context);
 
     system.SetAppletFrontendSet({
         nullptr,                                     // Parental Controls
@@ -881,6 +941,23 @@ bool GMainWindow::LoadROM(const QString& filename) {
                "wiki</a>. This message will not be shown again."));
     }
 
+    const auto no_imported =
+        system.GetFileSystemController().GetSysdataImportedDirectory()->GetFiles().empty();
+
+    if (result == Core::System::ResultStatus::Success &&
+        system.GetAppLoader().GetFileType() == Loader::FileType::XCI && no_imported) {
+        if (QMessageBox::question(this, tr("Import System Archives"),
+                                  tr("The game type you are using includes additional system files "
+                                     "that may improve yuzu's compatibility with this and other "
+                                     "games. Would you like to import these files?")) ==
+            QMessageBox::Yes) {
+            const auto game = Core::GetGameFileFromPath(vfs, filename.toStdString());
+            FileSys::XCI xci{game};
+            FileSys::SystemArchive::ImportXCISystemUpdate(
+                system.GetFileSystemController().GetSysdataImportedDirectory(), xci);
+        }
+    }
+
     if (result != Core::System::ResultStatus::Success) {
         switch (result) {
         case Core::System::ResultStatus::ErrorGetLoader:
@@ -904,16 +981,18 @@ bool GMainWindow::LoadROM(const QString& filename) {
         default:
             if (static_cast<u32>(result) >
                 static_cast<u32>(Core::System::ResultStatus::ErrorLoader)) {
-                LOG_CRITICAL(Frontend, "Failed to load ROM!");
                 const u16 loader_id = static_cast<u16>(Core::System::ResultStatus::ErrorLoader);
                 const u16 error_id = static_cast<u16>(result) - loader_id;
+                const std::string error_code = fmt::format("({:04X}-{:04X})", loader_id, error_id);
+                LOG_CRITICAL(Frontend, "Failed to load ROM! {}", error_code);
                 QMessageBox::critical(
-                    this, tr("Error while loading ROM!"),
+                    this,
+                    tr("Error while loading ROM! ").append(QString::fromStdString(error_code)),
                     QString::fromStdString(fmt::format(
-                        "While attempting to load the ROM requested, an error occured. Please "
-                        "refer to the yuzu wiki for more information or the yuzu discord for "
-                        "additional help.\n\nError Code: {:04X}-{:04X}\nError Description: {}",
-                        loader_id, error_id, static_cast<Loader::ResultStatus>(error_id))));
+                        "{}<br>Please follow <a href='https://yuzu-emu.org/help/quickstart/'>the "
+                        "yuzu quickstart guide</a> to redump your files.<br>You can refer "
+                        "to the yuzu wiki</a> or the yuzu Discord</a> for help.",
+                        static_cast<Loader::ResultStatus>(error_id))));
             } else {
                 QMessageBox::critical(
                     this, tr("Error while loading ROM!"),
@@ -954,9 +1033,8 @@ void GMainWindow::BootGame(const QString& filename) {
         return;
 
     // Create and start the emulation thread
-    emu_thread = std::make_unique<EmuThread>(render_window);
+    emu_thread = std::make_unique<EmuThread>();
     emit EmulationStarting(emu_thread.get());
-    render_window->moveContext();
     emu_thread->start();
 
     connect(render_window, &GRenderWindow::Closed, this, &GMainWindow::OnStopGame);
@@ -976,15 +1054,24 @@ void GMainWindow::BootGame(const QString& filename) {
         game_list_placeholder->hide();
     }
     status_bar_update_timer.start(2000);
+    async_status_button->setDisabled(true);
+    renderer_status_button->setDisabled(true);
+
+    if (UISettings::values.hide_mouse) {
+        mouse_hide_timer.start();
+        setMouseTracking(true);
+        ui.centralwidget->setMouseTracking(true);
+        ui.menubar->setMouseTracking(true);
+    }
 
     const u64 title_id = Core::System::GetInstance().CurrentProcess()->GetTitleID();
 
     std::string title_name;
     const auto res = Core::System::GetInstance().GetGameName(title_name);
     if (res != Loader::ResultStatus::Success) {
-        const auto [nacp, icon_file] = FileSys::PatchManager(title_id).GetControlMetadata();
-        if (nacp != nullptr)
-            title_name = nacp->GetApplicationName();
+        const auto metadata = FileSys::PatchManager(title_id).GetControlMetadata();
+        if (metadata.first != nullptr)
+            title_name = metadata.first->GetApplicationName();
 
         if (title_name.empty())
             title_name = FileUtil::GetFilename(filename.toStdString());
@@ -1003,6 +1090,14 @@ void GMainWindow::BootGame(const QString& filename) {
 }
 
 void GMainWindow::ShutdownGame() {
+    if (!emulation_running) {
+        return;
+    }
+
+    if (ui.action_Fullscreen->isChecked()) {
+        HideFullscreen();
+    }
+
     AllowOSSleep();
 
     discord_rpc->Pause();
@@ -1037,18 +1132,28 @@ void GMainWindow::ShutdownGame() {
         game_list->show();
     game_list->setFilterFocus();
 
+    setMouseTracking(false);
+    ui.centralwidget->setMouseTracking(false);
+    ui.menubar->setMouseTracking(false);
+
     UpdateWindowTitle();
 
     // Disable status bar updates
     status_bar_update_timer.stop();
-    message_label->setVisible(false);
     emu_speed_label->setVisible(false);
     game_fps_label->setVisible(false);
     emu_frametime_label->setVisible(false);
+    async_status_button->setEnabled(true);
+#ifdef HAS_VULKAN
+    renderer_status_button->setEnabled(true);
+#endif
 
     emulation_running = false;
 
     game_path.clear();
+
+    // When closing the game, destroy the GLWindow to clear the context after the game is closed
+    render_window->ReleaseRenderTarget();
 }
 
 void GMainWindow::StoreRecentFile(const QString& filename) {
@@ -1086,39 +1191,61 @@ void GMainWindow::OnGameListLoadFile(QString game_path) {
     BootGame(game_path);
 }
 
-void GMainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target) {
+void GMainWindow::OnGameListOpenFolder(GameListOpenTarget target, const std::string& game_path) {
     std::string path;
     QString open_target;
+
+    const auto v_file = Core::GetGameFileFromPath(vfs, game_path);
+    const auto loader = Loader::GetLoader(v_file);
+    FileSys::NACP control{};
+    u64 program_id{};
+
+    loader->ReadControlData(control);
+    loader->ReadProgramId(program_id);
+
+    const bool has_user_save{control.GetDefaultNormalSaveSize() > 0};
+    const bool has_device_save{control.GetDeviceSaveDataSize() > 0};
+
+    ASSERT_MSG(has_user_save != has_device_save, "Game uses both user and device savedata?");
+
     switch (target) {
     case GameListOpenTarget::SaveData: {
         open_target = tr("Save Data");
         const std::string nand_dir = FileUtil::GetUserPath(FileUtil::UserPath::NANDDir);
         ASSERT(program_id != 0);
 
-        const auto select_profile = [this] {
-            QtProfileSelectionDialog dialog(this);
-            dialog.setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint |
-                                  Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
-            dialog.setWindowModality(Qt::WindowModal);
+        if (has_user_save) {
+            // User save data
+            const auto select_profile = [this] {
+                QtProfileSelectionDialog dialog(this);
+                dialog.setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint |
+                                      Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint);
+                dialog.setWindowModality(Qt::WindowModal);
 
-            if (dialog.exec() == QDialog::Rejected) {
-                return -1;
+                if (dialog.exec() == QDialog::Rejected) {
+                    return -1;
+                }
+
+                return dialog.GetIndex();
+            };
+
+            const auto index = select_profile();
+            if (index == -1) {
+                return;
             }
 
-            return dialog.GetIndex();
-        };
-
-        const auto index = select_profile();
-        if (index == -1) {
-            return;
+            Service::Account::ProfileManager manager;
+            const auto user_id = manager.GetUser(static_cast<std::size_t>(index));
+            ASSERT(user_id);
+            path = nand_dir + FileSys::SaveDataFactory::GetFullPath(
+                                  FileSys::SaveDataSpaceId::NandUser,
+                                  FileSys::SaveDataType::SaveData, program_id, user_id->uuid, 0);
+        } else {
+            // Device save data
+            path = nand_dir + FileSys::SaveDataFactory::GetFullPath(
+                                  FileSys::SaveDataSpaceId::NandUser,
+                                  FileSys::SaveDataType::SaveData, program_id, {}, 0);
         }
-
-        Service::Account::ProfileManager manager;
-        const auto user_id = manager.GetUser(static_cast<std::size_t>(index));
-        ASSERT(user_id);
-        path = nand_dir + FileSys::SaveDataFactory::GetFullPath(FileSys::SaveDataSpaceId::NandUser,
-                                                                FileSys::SaveDataType::SaveData,
-                                                                program_id, user_id->uuid, 0);
 
         if (!FileUtil::Exists(path)) {
             FileUtil::CreateFullPath(path);
@@ -1149,23 +1276,6 @@ void GMainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target
     QDesktopServices::openUrl(QUrl::fromLocalFile(qpath));
 }
 
-void DisplayOrSelect(const QString& folder_path, const QString& file_path) {
-// Windows supports opening a folder with selecting a specified file in explorer. On every other
-// OS we just open the transferable shader cache folder without preselecting the transferable
-// shader cache file for the selected game.
-#if defined(Q_OS_WIN)
-    const QString explorer = QStringLiteral("explorer");
-    QStringList param;
-    if (!QFileInfo(file_path).isDir()) {
-        param << QStringLiteral("/select,");
-    }
-    param << QDir::toNativeSeparators(file_path);
-    QProcess::startDetached(explorer, param);
-#else
-    QDesktopServices::openUrl(QUrl::fromLocalFile(folder_path));
-#endif
-}
-
 void GMainWindow::OnTransferableShaderCacheOpenFile(u64 program_id) {
     ASSERT(program_id != 0);
 
@@ -1183,24 +1293,20 @@ void GMainWindow::OnTransferableShaderCacheOpenFile(u64 program_id) {
         return;
     }
 
-    DisplayOrSelect(tranferable_shader_cache_folder_path, transferable_shader_cache_file_path);
-}
-
-void GMainWindow::OnResolutionProfileOpenFile(u64 program_id) {
-    ASSERT(program_id != 0);
-
-    const QString rescaling_dir =
-        QString::fromStdString(FileUtil::GetUserPath(FileUtil::UserPath::RescalingDir));
-    const QString rescaling_profile_file_path =
-        rescaling_dir + QString::fromStdString(fmt::format("{:016X}.json", program_id));
-
-    if (!QFile::exists(rescaling_profile_file_path)) {
-        QMessageBox::warning(this, tr("Error Opening Rescaling Profile"),
-                             tr("A rescaling profile for this title does not exist."));
-        return;
+    // Windows supports opening a folder with selecting a specified file in explorer. On every other
+    // OS we just open the transferable shader cache folder without preselecting the transferable
+    // shader cache file for the selected game.
+#if defined(Q_OS_WIN)
+    const QString explorer = QStringLiteral("explorer");
+    QStringList param;
+    if (!QFileInfo(transferable_shader_cache_file_path).isDir()) {
+        param << QStringLiteral("/select,");
     }
-
-    DisplayOrSelect(rescaling_dir, rescaling_profile_file_path);
+    param << QDir::toNativeSeparators(transferable_shader_cache_file_path);
+    QProcess::startDetached(explorer, param);
+#else
+    QDesktopServices::openUrl(QUrl::fromLocalFile(tranferable_shader_cache_folder_path));
+#endif
 }
 
 static std::size_t CalculateRomFSEntrySize(const FileSys::VirtualDir& dir, bool full) {
@@ -1276,7 +1382,9 @@ void GMainWindow::OnGameListDumpRomFS(u64 program_id, const std::string& game_pa
     FileSys::VirtualFile romfs;
 
     if (*romfs_title_id == program_id) {
-        romfs = file;
+        const u64 ivfc_offset = loader->ReadRomFSIVFCOffset();
+        FileSys::PatchManager pm{program_id};
+        romfs = pm.PatchRomFS(file, ivfc_offset, FileSys::ContentRecordType::Program);
     } else {
         romfs = installed.GetEntry(*romfs_title_id, FileSys::ContentRecordType::Data)->GetRomFS();
     }
@@ -1344,6 +1452,71 @@ void GMainWindow::OnGameListNavigateToGamedbEntry(u64 program_id,
     }
 
     QDesktopServices::openUrl(QUrl(QStringLiteral("https://yuzu-emu.org/game/") + directory));
+}
+
+void GMainWindow::OnClearImportedSysdata() {
+    Core::System& system{Core::System::GetInstance()};
+
+    const auto path = FileUtil::GetUserPath(FileUtil::UserPath::SysDataDir) + "imported" DIR_SEP;
+    QDir dir(QString::fromStdString(path));
+    const auto list = dir.entryList(QDir::Files);
+    for (const auto& file : list) {
+        if (!dir.remove(file)) {
+            QMessageBox::warning(this, tr("Clear Failed"),
+                                 tr("The imported sysdata directory was not able to be cleared."));
+            return;
+        }
+    }
+
+    QMessageBox::information(this, tr("Clear Successful"),
+                             tr("The imported sysdata directory was cleared successfully."));
+}
+
+void GMainWindow::OnImportDirectorySystemUpdate() {
+    Core::System& system{Core::System::GetInstance()};
+
+    const auto dir = QFileDialog::getExistingDirectory(this, tr("Select System Update Directory"));
+
+    if (dir.isEmpty()) {
+        return;
+    }
+
+    const auto vdir = vfs->OpenDirectory(dir.toStdString(), FileSys::Mode::Read);
+    if (FileSys::SystemArchive::ImportDirectorySystemUpdate(
+            system.GetFileSystemController().GetSysdataImportedDirectory(), vdir)) {
+        QMessageBox::information(this, tr("Import Successful"),
+                                 tr("The system update import was successful."));
+    } else {
+        QMessageBox::warning(this, tr("Import Failed"), tr("The system update import failed."));
+    }
+}
+
+void GMainWindow::OnImportCartridgeSystemUpdate() {
+    Core::System& system{Core::System::GetInstance()};
+
+    const auto file = QFileDialog::getOpenFileName(this, tr("Select Cartridge File"), QString{},
+                                                   QStringLiteral("Cartridge Images (*.xci)"));
+
+    if (file.isEmpty()) {
+        return;
+    }
+
+    FileSys::XCI xci{vfs->OpenFile(file.toStdString(), FileSys::Mode::Read)};
+    if (FileSys::SystemArchive::ImportXCISystemUpdate(
+            system.GetFileSystemController().GetSysdataImportedDirectory(), xci)) {
+        QMessageBox::information(this, tr("Import Successful"),
+                                 tr("The system update import was successful."));
+    } else {
+        QMessageBox::warning(this, tr("Import Failed"), tr("The system update import failed."));
+    }
+}
+
+void GMainWindow::OnViewSystemArchiveStatus() {
+    Core::System& system{Core::System::GetInstance()};
+
+    system.GetFileSystemController().CreateFactories(*vfs);
+    SystemArchiveDialog dialog(this, system.GetFileSystemController());
+    dialog.exec();
 }
 
 void GMainWindow::OnGameListOpenDirectory(const QString& directory) {
@@ -1452,38 +1625,67 @@ void GMainWindow::OnMenuLoadFolder() {
 void GMainWindow::OnMenuInstallToNAND() {
     const QString file_filter =
         tr("Installable Switch File (*.nca *.nsp *.xci);;Nintendo Content Archive "
-           "(*.nca);;Nintendo Submissions Package (*.nsp);;NX Cartridge "
+           "(*.nca);;Nintendo Submission Package (*.nsp);;NX Cartridge "
            "Image (*.xci)");
-    QString filename = QFileDialog::getOpenFileName(this, tr("Install File"),
-                                                    UISettings::values.roms_path, file_filter);
+    QStringList files = QFileDialog::getOpenFileNames(this, tr("Install Files"),
+                                                      UISettings::values.roms_path, file_filter);
 
-    if (filename.isEmpty()) {
+    if (files.isEmpty()) {
         return;
     }
 
-    const auto qt_raw_copy = [this](const FileSys::VirtualFile& src,
-                                    const FileSys::VirtualFile& dest, std::size_t block_size) {
-        if (src == nullptr || dest == nullptr)
+    InstallDialog installDialog(this, files);
+    if (installDialog.exec() == QDialog::Rejected) {
+        return;
+    }
+
+    const QStringList filenames = installDialog.GetFilenames();
+    const bool overwrite_files = installDialog.ShouldOverwriteFiles();
+
+    int count = 0;
+    int total_count = filenames.size();
+    bool is_progressdialog_created = false;
+
+    const auto qt_raw_copy = [this, &count, &total_count, &is_progressdialog_created](
+                                 const FileSys::VirtualFile& src, const FileSys::VirtualFile& dest,
+                                 std::size_t block_size) {
+        if (src == nullptr || dest == nullptr) {
             return false;
-        if (!dest->Resize(src->GetSize()))
+        }
+        if (!dest->Resize(src->GetSize())) {
             return false;
+        }
 
         std::array<u8, 0x1000> buffer{};
         const int progress_maximum = static_cast<int>(src->GetSize() / buffer.size());
 
-        QProgressDialog progress(
-            tr("Installing file \"%1\"...").arg(QString::fromStdString(src->GetName())),
-            tr("Cancel"), 0, progress_maximum, this);
-        progress.setWindowModality(Qt::WindowModal);
+        if (!is_progressdialog_created) {
+            ui.action_Install_File_NAND->setEnabled(false);
+            install_progress = new QProgressDialog(
+                tr("Installing file \"%1\"...").arg(QString::fromStdString(src->GetName())),
+                tr("Cancel"), 0, progress_maximum, this);
+            install_progress->setWindowTitle(
+                tr("%n file(s) remaining", "", total_count - count - 1));
+            install_progress->setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint &
+                                             ~Qt::WindowMaximizeButtonHint);
+            install_progress->setAutoClose(false);
+            is_progressdialog_created = true;
+        } else {
+            install_progress->setWindowTitle(
+                tr("%n file(s) remaining", "", total_count - count - 1));
+            install_progress->setLabelText(
+                tr("Installing file \"%1\"...").arg(QString::fromStdString(src->GetName())));
+            install_progress->setMaximum(progress_maximum);
+        }
 
         for (std::size_t i = 0; i < src->GetSize(); i += buffer.size()) {
-            if (progress.wasCanceled()) {
+            if (install_progress->wasCanceled()) {
                 dest->Resize(0);
                 return false;
             }
 
             const int progress_value = static_cast<int>(i / buffer.size());
-            progress.setValue(progress_value);
+            install_progress->setValue(progress_value);
 
             const auto read = src->Read(buffer.data(), buffer.size(), i);
             dest->Write(buffer.data(), read, i);
@@ -1492,166 +1694,167 @@ void GMainWindow::OnMenuInstallToNAND() {
         return true;
     };
 
-    const auto success = [this]() {
+    const auto success = [this, &count, &is_progressdialog_created]() {
+        if (is_progressdialog_created) {
+            install_progress->close();
+        }
         QMessageBox::information(this, tr("Successfully Installed"),
-                                 tr("The file was successfully installed."));
+                                 tr("%n file(s) successfully installed", "", count));
         game_list->PopulateAsync(UISettings::values.game_dirs);
         FileUtil::DeleteDirRecursively(FileUtil::GetUserPath(FileUtil::UserPath::CacheDir) +
                                        DIR_SEP + "game_list");
+        ui.action_Install_File_NAND->setEnabled(true);
     };
 
-    const auto failed = [this]() {
+    const auto failed = [this, &is_progressdialog_created](const QString& file) {
+        if (is_progressdialog_created) {
+            install_progress->close();
+        }
         QMessageBox::warning(
-            this, tr("Failed to Install"),
+            this, tr("Failed to Install %1").arg(QFileInfo(file).fileName()),
             tr("There was an error while attempting to install the provided file. It "
                "could have an incorrect format or be missing metadata. Please "
                "double-check your file and try again."));
+        game_list->PopulateAsync(UISettings::values.game_dirs);
+        ui.action_Install_File_NAND->setEnabled(true);
     };
 
-    const auto overwrite = [this]() {
-        return QMessageBox::question(this, tr("Failed to Install"),
-                                     tr("The file you are attempting to install already exists "
-                                        "in the cache. Would you like to overwrite it?")) ==
-               QMessageBox::Yes;
+    const auto overwrite = [this](const QString& file) {
+        return QMessageBox::question(
+                   this, tr("Failed to Install %1").arg(QFileInfo(file).fileName()),
+                   tr("The file you are attempting to install already exists "
+                      "in the cache. Would you like to overwrite it?")) == QMessageBox::Yes;
     };
 
-    if (filename.endsWith(QStringLiteral("xci"), Qt::CaseInsensitive) ||
-        filename.endsWith(QStringLiteral("nsp"), Qt::CaseInsensitive)) {
-        std::shared_ptr<FileSys::NSP> nsp;
-        if (filename.endsWith(QStringLiteral("nsp"), Qt::CaseInsensitive)) {
-            nsp = std::make_shared<FileSys::NSP>(
-                vfs->OpenFile(filename.toStdString(), FileSys::Mode::Read));
-            if (nsp->IsExtractedType())
-                failed();
-        } else {
-            const auto xci = std::make_shared<FileSys::XCI>(
-                vfs->OpenFile(filename.toStdString(), FileSys::Mode::Read));
-            nsp = xci->GetSecurePartitionNSP();
-        }
+    for (const QString& filename : filenames) {
+        if (filename.endsWith(QStringLiteral("xci"), Qt::CaseInsensitive) ||
+            filename.endsWith(QStringLiteral("nsp"), Qt::CaseInsensitive)) {
+            std::shared_ptr<FileSys::NSP> nsp;
+            if (filename.endsWith(QStringLiteral("nsp"), Qt::CaseInsensitive)) {
+                nsp = std::make_shared<FileSys::NSP>(
+                    vfs->OpenFile(filename.toStdString(), FileSys::Mode::Read));
+                if (nsp->IsExtractedType()) {
+                    failed(filename);
+                    break;
+                }
+            } else {
+                const auto xci = std::make_shared<FileSys::XCI>(
+                    vfs->OpenFile(filename.toStdString(), FileSys::Mode::Read));
+                nsp = xci->GetSecurePartitionNSP();
+            }
 
-        if (nsp->GetStatus() != Loader::ResultStatus::Success) {
-            failed();
-            return;
-        }
-        const auto res = Core::System::GetInstance()
-                             .GetFileSystemController()
-                             .GetUserNANDContents()
-                             ->InstallEntry(*nsp, false, qt_raw_copy);
-        if (res == FileSys::InstallResult::Success) {
-            success();
-        } else {
-            if (res == FileSys::InstallResult::ErrorAlreadyExists) {
-                if (overwrite()) {
+            if (nsp->GetStatus() != Loader::ResultStatus::Success) {
+                failed(filename);
+                break;
+            }
+            const auto res = Core::System::GetInstance()
+                                 .GetFileSystemController()
+                                 .GetUserNANDContents()
+                                 ->InstallEntry(*nsp, false, qt_raw_copy);
+            if (res == FileSys::InstallResult::Success) {
+                ++count;
+            } else if (res == FileSys::InstallResult::ErrorAlreadyExists) {
+                if (overwrite_files && overwrite(filename)) {
                     const auto res2 = Core::System::GetInstance()
                                           .GetFileSystemController()
                                           .GetUserNANDContents()
                                           ->InstallEntry(*nsp, true, qt_raw_copy);
-                    if (res2 == FileSys::InstallResult::Success) {
-                        success();
-                    } else {
-                        failed();
+                    if (res2 != FileSys::InstallResult::Success) {
+                        failed(filename);
+                        break;
                     }
+                    ++count;
+                } else {
+                    --total_count;
                 }
             } else {
-                failed();
+                failed(filename);
+                break;
             }
-        }
-    } else {
-        const auto nca = std::make_shared<FileSys::NCA>(
-            vfs->OpenFile(filename.toStdString(), FileSys::Mode::Read));
-        const auto id = nca->GetStatus();
-
-        // Game updates necessary are missing base RomFS
-        if (id != Loader::ResultStatus::Success &&
-            id != Loader::ResultStatus::ErrorMissingBKTRBaseRomFS) {
-            failed();
-            return;
-        }
-
-        const QStringList tt_options{tr("System Application"),
-                                     tr("System Archive"),
-                                     tr("System Application Update"),
-                                     tr("Firmware Package (Type A)"),
-                                     tr("Firmware Package (Type B)"),
-                                     tr("Game"),
-                                     tr("Game Update"),
-                                     tr("Game DLC"),
-                                     tr("Delta Title")};
-        bool ok;
-        const auto item = QInputDialog::getItem(
-            this, tr("Select NCA Install Type..."),
-            tr("Please select the type of title you would like to install this NCA as:\n(In "
-               "most instances, the default 'Game' is fine.)"),
-            tt_options, 5, false, &ok);
-
-        auto index = tt_options.indexOf(item);
-        if (!ok || index == -1) {
-            QMessageBox::warning(this, tr("Failed to Install"),
-                                 tr("The title type you selected for the NCA is invalid."));
-            return;
-        }
-
-        // If index is equal to or past Game, add the jump in TitleType.
-        if (index >= 5) {
-            index += static_cast<size_t>(FileSys::TitleType::Application) -
-                     static_cast<size_t>(FileSys::TitleType::FirmwarePackageB);
-        }
-
-        FileSys::InstallResult res;
-        if (index >= static_cast<size_t>(FileSys::TitleType::Application)) {
-            res = Core::System::GetInstance()
-                      .GetFileSystemController()
-                      .GetUserNANDContents()
-                      ->InstallEntry(*nca, static_cast<FileSys::TitleType>(index), false,
-                                     qt_raw_copy);
         } else {
-            res = Core::System::GetInstance()
-                      .GetFileSystemController()
-                      .GetSystemNANDContents()
-                      ->InstallEntry(*nca, static_cast<FileSys::TitleType>(index), false,
-                                     qt_raw_copy);
-        }
+            const auto nca = std::make_shared<FileSys::NCA>(
+                vfs->OpenFile(filename.toStdString(), FileSys::Mode::Read));
+            const auto id = nca->GetStatus();
 
-        if (res == FileSys::InstallResult::Success) {
-            success();
-        } else if (res == FileSys::InstallResult::ErrorAlreadyExists) {
-            if (overwrite()) {
-                const auto res2 = Core::System::GetInstance()
-                                      .GetFileSystemController()
-                                      .GetUserNANDContents()
-                                      ->InstallEntry(*nca, static_cast<FileSys::TitleType>(index),
-                                                     true, qt_raw_copy);
-                if (res2 == FileSys::InstallResult::Success) {
-                    success();
+            // Game updates necessary are missing base RomFS
+            if (id != Loader::ResultStatus::Success &&
+                id != Loader::ResultStatus::ErrorMissingBKTRBaseRomFS) {
+                failed(filename);
+                break;
+            }
+
+            const QStringList tt_options{tr("System Application"),
+                                         tr("System Archive"),
+                                         tr("System Application Update"),
+                                         tr("Firmware Package (Type A)"),
+                                         tr("Firmware Package (Type B)"),
+                                         tr("Game"),
+                                         tr("Game Update"),
+                                         tr("Game DLC"),
+                                         tr("Delta Title")};
+            bool ok;
+            const auto item = QInputDialog::getItem(
+                this, tr("Select NCA Install Type..."),
+                tr("Please select the type of title you would like to install this NCA as:\n(In "
+                   "most instances, the default 'Game' is fine.)"),
+                tt_options, 5, false, &ok);
+
+            auto index = tt_options.indexOf(item);
+            if (!ok || index == -1) {
+                QMessageBox::warning(this, tr("Failed to Install"),
+                                     tr("The title type you selected for the NCA is invalid."));
+                break;
+            }
+
+            // If index is equal to or past Game, add the jump in TitleType.
+            if (index >= 5) {
+                index += static_cast<size_t>(FileSys::TitleType::Application) -
+                         static_cast<size_t>(FileSys::TitleType::FirmwarePackageB);
+            }
+
+            FileSys::InstallResult res;
+            if (index >= static_cast<s32>(FileSys::TitleType::Application)) {
+                res = Core::System::GetInstance()
+                          .GetFileSystemController()
+                          .GetUserNANDContents()
+                          ->InstallEntry(*nca, static_cast<FileSys::TitleType>(index), false,
+                                         qt_raw_copy);
+            } else {
+                res = Core::System::GetInstance()
+                          .GetFileSystemController()
+                          .GetSystemNANDContents()
+                          ->InstallEntry(*nca, static_cast<FileSys::TitleType>(index), false,
+                                         qt_raw_copy);
+            }
+
+            if (res == FileSys::InstallResult::Success) {
+                ++count;
+            } else if (res == FileSys::InstallResult::ErrorAlreadyExists) {
+                if (overwrite_files && overwrite(filename)) {
+                    const auto res2 =
+                        Core::System::GetInstance()
+                            .GetFileSystemController()
+                            .GetUserNANDContents()
+                            ->InstallEntry(*nca, static_cast<FileSys::TitleType>(index), true,
+                                           qt_raw_copy);
+                    if (res2 != FileSys::InstallResult::Success) {
+                        failed(filename);
+                        break;
+                    }
+                    ++count;
                 } else {
-                    failed();
+                    --total_count;
                 }
+            } else {
+                failed(filename);
+                break;
             }
-        } else {
-            failed();
         }
-    }
-}
 
-void GMainWindow::OnMenuSelectEmulatedDirectory(EmulatedDirectoryTarget target) {
-    const auto res = QMessageBox::information(
-        this, tr("Changing Emulated Directory"),
-        tr("You are about to change the emulated %1 directory of the system. Please note "
-           "that this does not also move the contents of the previous directory to the "
-           "new one and you will have to do that yourself.")
-            .arg(target == EmulatedDirectoryTarget::SDMC ? tr("SD card") : tr("NAND")),
-        QMessageBox::StandardButtons{QMessageBox::Ok, QMessageBox::Cancel});
-
-    if (res == QMessageBox::Cancel)
-        return;
-
-    QString dir_path = QFileDialog::getExistingDirectory(this, tr("Select Directory"));
-    if (!dir_path.isEmpty()) {
-        FileUtil::GetUserPath(target == EmulatedDirectoryTarget::SDMC ? FileUtil::UserPath::SDMCDir
-                                                                      : FileUtil::UserPath::NANDDir,
-                              dir_path.toStdString());
-        Core::System::GetInstance().GetFileSystemController().CreateFactories(*vfs);
-        game_list->PopulateAsync(UISettings::values.game_dirs);
+        // Return success only on the last file
+        if (filename == filenames.last()) {
+            success();
+        }
     }
 }
 
@@ -1700,11 +1903,6 @@ void GMainWindow::OnStartGame() {
 }
 
 void GMainWindow::OnPauseGame() {
-    Core::System& system{Core::System::GetInstance()};
-    if (system.GetExitLock() && !ConfirmForceLockedExit()) {
-        return;
-    }
-
     emu_thread->SetRunning(false);
 
     ui.action_Start->setEnabled(true);
@@ -1787,7 +1985,7 @@ void GMainWindow::ToggleWindowMode() {
         // Render in the main window...
         render_window->BackupGeometry();
         ui.horizontalLayout->addWidget(render_window);
-        render_window->setFocusPolicy(Qt::ClickFocus);
+        render_window->setFocusPolicy(Qt::StrongFocus);
         if (emulation_running) {
             render_window->setVisible(true);
             render_window->setFocus();
@@ -1804,6 +2002,20 @@ void GMainWindow::ToggleWindowMode() {
             render_window->RestoreGeometry();
             game_list->show();
         }
+    }
+}
+
+void GMainWindow::ResetWindowSize() {
+    const auto aspect_ratio = Layout::EmulationAspectRatio(
+        static_cast<Layout::AspectRatio>(Settings::values.aspect_ratio),
+        static_cast<float>(Layout::ScreenUndocked::Height) / Layout::ScreenUndocked::Width);
+    if (!ui.action_Single_Window_Mode->isChecked()) {
+        render_window->resize(Layout::ScreenUndocked::Height / aspect_ratio,
+                              Layout::ScreenUndocked::Height);
+    } else {
+        resize(Layout::ScreenUndocked::Height / aspect_ratio,
+               Layout::ScreenUndocked::Height + menuBar()->height() +
+                   (ui.action_Show_Status_Bar->isChecked() ? statusBar()->height() : 0));
     }
 }
 
@@ -1833,6 +2045,24 @@ void GMainWindow::OnConfigure() {
     }
 
     config->Save();
+
+    if (UISettings::values.hide_mouse && emulation_running) {
+        setMouseTracking(true);
+        ui.centralwidget->setMouseTracking(true);
+        ui.menubar->setMouseTracking(true);
+        mouse_hide_timer.start();
+    } else {
+        setMouseTracking(false);
+        ui.centralwidget->setMouseTracking(false);
+        ui.menubar->setMouseTracking(false);
+    }
+
+    dock_status_button->setChecked(Settings::values.use_docked_mode);
+    async_status_button->setChecked(Settings::values.use_asynchronous_gpu_emulation);
+#ifdef HAS_VULKAN
+    renderer_status_button->setChecked(Settings::values.renderer_backend ==
+                                       Settings::RendererBackend::Vulkan);
+#endif
 }
 
 void GMainWindow::OnLoadAmiibo() {
@@ -1844,6 +2074,10 @@ void GMainWindow::OnLoadAmiibo() {
         return;
     }
 
+    LoadAmiibo(filename);
+}
+
+void GMainWindow::LoadAmiibo(const QString& filename) {
     Core::System& system{Core::System::GetInstance()};
     Service::SM::ServiceManager& sm = system.ServiceManager();
     auto nfc = sm.GetService<Service::NFP::Module::Interface>("nfp:user");
@@ -1912,15 +2146,24 @@ void GMainWindow::OnCaptureScreenshot() {
 }
 
 void GMainWindow::UpdateWindowTitle(const QString& title_name) {
-    const QString full_name = QString::fromUtf8(Common::g_build_fullname);
-    const QString branch_name = QString::fromUtf8(Common::g_scm_branch);
-    const QString description = QString::fromUtf8(Common::g_scm_desc);
+    const auto full_name = std::string(Common::g_build_fullname);
+    const auto branch_name = std::string(Common::g_scm_branch);
+    const auto description = std::string(Common::g_scm_desc);
+    const auto build_id = std::string(Common::g_build_id);
+
+    const auto date =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd")).toStdString();
 
     if (title_name.isEmpty()) {
-        setWindowTitle(QStringLiteral("yuzu %1| %2-%3").arg(full_name, branch_name, description));
+        const auto fmt = std::string(Common::g_title_bar_format_idle);
+        setWindowTitle(QString::fromStdString(fmt::format(fmt.empty() ? "yuzu {0}| {1}-{2}" : fmt,
+                                                          full_name, branch_name, description,
+                                                          std::string{}, date, build_id)));
     } else {
-        setWindowTitle(QStringLiteral("yuzu %1| %4 | %2-%3")
-                           .arg(full_name, branch_name, description, title_name));
+        const auto fmt = std::string(Common::g_title_bar_format_running);
+        setWindowTitle(QString::fromStdString(
+            fmt::format(fmt.empty() ? "yuzu {0}| {3} | {1}-{2}" : fmt, full_name, branch_name,
+                        description, title_name.toStdString(), date, build_id)));
     }
 }
 
@@ -1945,6 +2188,30 @@ void GMainWindow::UpdateStatusBar() {
     emu_speed_label->setVisible(true);
     game_fps_label->setVisible(true);
     emu_frametime_label->setVisible(true);
+}
+
+void GMainWindow::HideMouseCursor() {
+    if (emu_thread == nullptr || UISettings::values.hide_mouse == false) {
+        mouse_hide_timer.stop();
+        ShowMouseCursor();
+        return;
+    }
+    setCursor(QCursor(Qt::BlankCursor));
+}
+
+void GMainWindow::ShowMouseCursor() {
+    unsetCursor();
+    if (emu_thread != nullptr && UISettings::values.hide_mouse) {
+        mouse_hide_timer.start();
+    }
+}
+
+void GMainWindow::mouseMoveEvent(QMouseEvent* event) {
+    ShowMouseCursor();
+}
+
+void GMainWindow::mousePressEvent(QMouseEvent* event) {
+    ShowMouseCursor();
 }
 
 void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string details) {
@@ -2012,7 +2279,6 @@ void GMainWindow::OnCoreError(Core::System::ResultStatus result, std::string det
         if (emu_thread) {
             emu_thread->SetRunning(true);
             message_label->setText(status_message);
-            message_label->setVisible(true);
         }
     }
 }
@@ -2051,27 +2317,25 @@ void GMainWindow::OnReinitializeKeys(ReinitializeKeyBehavior behavior) {
 
         QString errors;
         if (!pdm.HasFuses()) {
-            errors += tr("- Missing fuses - Cannot derive SBK\n");
+            errors += tr("Missing fuses");
         }
         if (!pdm.HasBoot0()) {
-            errors += tr("- Missing BOOT0 - Cannot derive master keys\n");
+            errors += tr(" - Missing BOOT0");
         }
         if (!pdm.HasPackage2()) {
-            errors += tr("- Missing BCPKG2-1-Normal-Main - Cannot derive general keys\n");
+            errors += tr(" - Missing BCPKG2-1-Normal-Main");
         }
         if (!pdm.HasProdInfo()) {
-            errors += tr("- Missing PRODINFO - Cannot derive title keys\n");
+            errors += tr(" - Missing PRODINFO");
         }
         if (!errors.isEmpty()) {
             QMessageBox::warning(
-                this, tr("Warning Missing Derivation Components"),
-                tr("The following are missing from your configuration that may hinder key "
-                   "derivation. It will be attempted but may not complete.<br><br>") +
-                    errors +
-                    tr("<br><br>You can get all of these and dump all of your games easily by "
-                       "following <a href='https://yuzu-emu.org/help/quickstart/'>the "
-                       "quickstart guide</a>. Alternatively, you can use another method of dumping "
-                       "to obtain all of your keys."));
+                this, tr("Derivation Components Missing"),
+                tr("Components are missing that may hinder key derivation from completing. "
+                   "<br>Please follow <a href='https://yuzu-emu.org/help/quickstart/'>the yuzu "
+                   "quickstart guide</a> to get all your keys and "
+                   "games.<br><br><small>(%1)</small>")
+                    .arg(errors));
         }
 
         QProgressDialog prog;
@@ -2179,39 +2443,47 @@ void GMainWindow::closeEvent(QCloseEvent* event) {
     QWidget::closeEvent(event);
 }
 
-static bool IsSingleFileDropEvent(QDropEvent* event) {
-    const QMimeData* mimeData = event->mimeData();
-    return mimeData->hasUrls() && mimeData->urls().length() == 1;
+static bool IsSingleFileDropEvent(const QMimeData* mime) {
+    return mime->hasUrls() && mime->urls().length() == 1;
+}
+
+void GMainWindow::AcceptDropEvent(QDropEvent* event) {
+    if (IsSingleFileDropEvent(event->mimeData())) {
+        event->setDropAction(Qt::DropAction::LinkAction);
+        event->accept();
+    }
+}
+
+bool GMainWindow::DropAction(QDropEvent* event) {
+    if (!IsSingleFileDropEvent(event->mimeData())) {
+        return false;
+    }
+
+    const QMimeData* mime_data = event->mimeData();
+    const QString& filename = mime_data->urls().at(0).toLocalFile();
+
+    if (emulation_running && QFileInfo(filename).suffix() == QStringLiteral("bin")) {
+        // Amiibo
+        LoadAmiibo(filename);
+    } else {
+        // Game
+        if (ConfirmChangeGame()) {
+            BootGame(filename);
+        }
+    }
+    return true;
 }
 
 void GMainWindow::dropEvent(QDropEvent* event) {
-    if (IsSingleFileDropEvent(event) && ConfirmChangeGame()) {
-        const QMimeData* mimeData = event->mimeData();
-        QString filename = mimeData->urls().at(0).toLocalFile();
-        BootGame(filename);
-    }
+    DropAction(event);
 }
 
 void GMainWindow::dragEnterEvent(QDragEnterEvent* event) {
-    if (IsSingleFileDropEvent(event)) {
-        event->acceptProposedAction();
-    }
+    AcceptDropEvent(event);
 }
 
 void GMainWindow::dragMoveEvent(QDragMoveEvent* event) {
-    event->acceptProposedAction();
-}
-
-void GMainWindow::keyPressEvent(QKeyEvent* event) {
-    if (render_window) {
-        render_window->ForwardKeyPressEvent(event);
-    }
-}
-
-void GMainWindow::keyReleaseEvent(QKeyEvent* event) {
-    if (render_window) {
-        render_window->ForwardKeyReleaseEvent(event);
-    }
+    AcceptDropEvent(event);
 }
 
 bool GMainWindow::ConfirmChangeGame() {
@@ -2265,8 +2537,16 @@ void GMainWindow::UpdateUITheme() {
     QStringList theme_paths(default_theme_paths);
 
     if (is_default_theme || current_theme.isEmpty()) {
-        qApp->setStyleSheet({});
-        setStyleSheet({});
+        const QString theme_uri(QStringLiteral(":default/style.qss"));
+        QFile f(theme_uri);
+        if (f.open(QFile::ReadOnly | QFile::Text)) {
+            QTextStream ts(&f);
+            qApp->setStyleSheet(ts.readAll());
+            setStyleSheet(ts.readAll());
+        } else {
+            qApp->setStyleSheet({});
+            setStyleSheet({});
+        }
         theme_paths.append(default_icons);
         QIcon::setThemeName(default_icons);
     } else {
@@ -2333,6 +2613,9 @@ int main(int argc, char* argv[]) {
     GMainWindow main_window;
     // After settings have been loaded by GMainWindow, apply the filter
     main_window.show();
+
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged, &main_window,
+                     &GMainWindow::OnAppFocusStateChanged);
 
     Settings::LogSettings();
 

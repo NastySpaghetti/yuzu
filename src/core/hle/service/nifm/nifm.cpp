@@ -9,6 +9,7 @@
 #include "core/hle/kernel/writable_event.h"
 #include "core/hle/service/nifm/nifm.h"
 #include "core/hle/service/service.h"
+#include "core/settings.h"
 
 namespace Service::NIFM {
 
@@ -69,10 +70,8 @@ public:
         RegisterHandlers(functions);
 
         auto& kernel = system.Kernel();
-        event1 = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Automatic,
-                                                        "IRequest:Event1");
-        event2 = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Automatic,
-                                                        "IRequest:Event2");
+        event1 = Kernel::WritableEvent::CreateEventPair(kernel, "IRequest:Event1");
+        event2 = Kernel::WritableEvent::CreateEventPair(kernel, "IRequest:Event2");
     }
 
 private:
@@ -88,7 +87,12 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
-        rb.PushEnum(RequestState::Connected);
+
+        if (Settings::values.bcat_backend == "none") {
+            rb.PushEnum(RequestState::NotSubmitted);
+        } else {
+            rb.PushEnum(RequestState::Connected);
+        }
     }
 
     void GetResult(Kernel::HLERequestContext& ctx) {
@@ -196,20 +200,29 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
-        rb.Push<u8>(1);
+        if (Settings::values.bcat_backend == "none") {
+            rb.Push<u8>(0);
+        } else {
+            rb.Push<u8>(1);
+        }
     }
     void IsAnyInternetRequestAccepted(Kernel::HLERequestContext& ctx) {
         LOG_WARNING(Service_NIFM, "(STUBBED) called");
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
-        rb.Push<u8>(1);
+        if (Settings::values.bcat_backend == "none") {
+            rb.Push<u8>(0);
+        } else {
+            rb.Push<u8>(1);
+        }
     }
     Core::System& system;
 };
 
 IGeneralService::IGeneralService(Core::System& system)
     : ServiceFramework("IGeneralService"), system(system) {
+    // clang-format off
     static const FunctionInfo functions[] = {
         {1, &IGeneralService::GetClientId, "GetClientId"},
         {2, &IGeneralService::CreateScanRequest, "CreateScanRequest"},
@@ -248,7 +261,14 @@ IGeneralService::IGeneralService(Core::System& system)
         {36, nullptr, "GetCurrentAccessPoint"},
         {37, nullptr, "Shutdown"},
         {38, nullptr, "GetAllowedChannels"},
+        {39, nullptr, "NotifyApplicationSuspended"},
+        {40, nullptr, "SetAcceptableNetworkTypeFlag"},
+        {41, nullptr, "GetAcceptableNetworkTypeFlag"},
+        {42, nullptr, "NotifyConnectionStateChanged"},
+        {43, nullptr, "SetWowlDelayedWakeTime"},
     };
+    // clang-format on
+
     RegisterHandlers(functions);
 }
 

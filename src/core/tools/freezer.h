@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -14,6 +15,10 @@ namespace Core::Timing {
 class CoreTiming;
 struct EventType;
 } // namespace Core::Timing
+
+namespace Core::Memory {
+class Memory;
+}
 
 namespace Tools {
 
@@ -33,7 +38,7 @@ public:
         u64 value;
     };
 
-    explicit Freezer(Core::Timing::CoreTiming& core_timing);
+    explicit Freezer(Core::Timing::CoreTiming& core_timing_, Core::Memory::Memory& memory_);
     ~Freezer();
 
     // Enables or disables the entire memory freezer.
@@ -75,8 +80,9 @@ private:
     mutable std::mutex entries_mutex;
     std::vector<Entry> entries;
 
-    Core::Timing::EventType* event;
+    std::shared_ptr<Core::Timing::EventType> event;
     Core::Timing::CoreTiming& core_timing;
+    Core::Memory::Memory& memory;
 };
 
 } // namespace Tools

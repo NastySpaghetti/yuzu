@@ -16,23 +16,23 @@ namespace Service::Account {
 using Common::UUID;
 
 struct UserRaw {
-    UUID uuid;
-    UUID uuid2;
-    u64 timestamp;
-    ProfileUsername username;
-    ProfileData extra_data;
+    UUID uuid{Common::INVALID_UUID};
+    UUID uuid2{Common::INVALID_UUID};
+    u64 timestamp{};
+    ProfileUsername username{};
+    ProfileData extra_data{};
 };
 static_assert(sizeof(UserRaw) == 0xC8, "UserRaw has incorrect size.");
 
 struct ProfileDataRaw {
     INSERT_PADDING_BYTES(0x10);
-    std::array<UserRaw, MAX_USERS> users;
+    std::array<UserRaw, MAX_USERS> users{};
 };
 static_assert(sizeof(ProfileDataRaw) == 0x650, "ProfileDataRaw has incorrect size.");
 
 // TODO(ogniK): Get actual error codes
-constexpr ResultCode ERROR_TOO_MANY_USERS(ErrorModule::Account, -1);
-constexpr ResultCode ERROR_USER_ALREADY_EXISTS(ErrorModule::Account, -2);
+constexpr ResultCode ERROR_TOO_MANY_USERS(ErrorModule::Account, u32(-1));
+constexpr ResultCode ERROR_USER_ALREADY_EXISTS(ErrorModule::Account, u32(-2));
 constexpr ResultCode ERROR_ARGUMENT_IS_NULL(ErrorModule::Account, 20);
 
 constexpr char ACC_SAVE_AVATORS_BASE_PATH[] = "/system/save/8000000000000010/su/avators/";
@@ -238,7 +238,7 @@ UserIDArray ProfileManager::GetOpenUsers() const {
     std::transform(profiles.begin(), profiles.end(), output.begin(), [](const ProfileInfo& p) {
         if (p.is_open)
             return p.user_uuid;
-        return UUID{};
+        return UUID{Common::INVALID_UUID};
     });
     std::stable_partition(output.begin(), output.end(), [](const UUID& uuid) { return uuid; });
     return output;

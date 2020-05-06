@@ -40,8 +40,7 @@ Module::Module(Core::System& system) {
     auto& kernel = system.Kernel();
     for (u32 i = 0; i < MaxNvEvents; i++) {
         std::string event_label = fmt::format("NVDRV::NvEvent_{}", i);
-        events_interface.events[i] = Kernel::WritableEvent::CreateEventPair(
-            kernel, Kernel::ResetType::Automatic, event_label);
+        events_interface.events[i] = Kernel::WritableEvent::CreateEventPair(kernel, event_label);
         events_interface.status[i] = EventState::Free;
         events_interface.registered[i] = false;
     }
@@ -101,11 +100,11 @@ void Module::SignalSyncpt(const u32 syncpoint_id, const u32 value) {
     }
 }
 
-Kernel::SharedPtr<Kernel::ReadableEvent> Module::GetEvent(const u32 event_id) const {
+std::shared_ptr<Kernel::ReadableEvent> Module::GetEvent(const u32 event_id) const {
     return events_interface.events[event_id].readable;
 }
 
-Kernel::SharedPtr<Kernel::WritableEvent> Module::GetEventWriteable(const u32 event_id) const {
+std::shared_ptr<Kernel::WritableEvent> Module::GetEventWriteable(const u32 event_id) const {
     return events_interface.events[event_id].writable;
 }
 

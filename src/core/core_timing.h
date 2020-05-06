@@ -6,10 +6,12 @@
 
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
+
 #include "common/common_types.h"
 #include "common/threadsafe_queue.h"
 
@@ -20,10 +22,13 @@ using TimedCallback = std::function<void(u64 userdata, s64 cycles_late)>;
 
 /// Contains the characteristics of a particular event.
 struct EventType {
+    EventType(TimedCallback&& callback, std::string&& name)
+        : callback{std::move(callback)}, name{std::move(name)} {}
+
     /// The event's callback function.
     TimedCallback callback;
     /// A pointer to the name of the event.
-    const std::string* name;
+    const std::string name;
 };
 
 /**
@@ -56,31 +61,17 @@ public:
     /// Tears down all timing related functionality.
     void Shutdown();
 
-    /// Registers a core timing event with the given name and callback.
-    ///
-    /// @param name     The name of the core timing event to register.
-    /// @param callback The callback to execute for the event.
-    ///
-    /// @returns An EventType instance representing the registered event.
-    ///
-    /// @pre The name of the event being registered must be unique among all
-    ///      registered events.
-    ///
-    EventType* RegisterEvent(const std::string& name, TimedCallback callback);
-
-    /// Unregisters all registered events thus far. Note: not thread unsafe
-    void UnregisterAllEvents();
-
     /// After the first Advance, the slice lengths and the downcount will be reduced whenever an
     /// event is scheduled earlier than the current values.
     ///
     /// Scheduling from a callback will not update the downcount until the Advance() completes.
-    void ScheduleEvent(s64 cycles_into_future, const EventType* event_type, u64 userdata = 0);
+    void ScheduleEvent(s64 cycles_into_future, const std::shared_ptr<EventType>& event_type,
+                       u64 userdata = 0);
 
-    void UnscheduleEvent(const EventType* event_type, u64 userdata);
+    void UnscheduleEvent(const std::shared_ptr<EventType>& event_type, u64 userdata);
 
     /// We only permit one event of each type in the queue at a time.
-    void RemoveEvent(const EventType* event_type);
+    void RemoveEvent(const std::shared_ptr<EventType>& event_type);
 
     void ForceExceptionCheck(s64 cycles);
 
@@ -104,7 +95,19 @@ public:
 
     std::chrono::microseconds GetGlobalTimeUs() const;
 
-    int GetDowncount() const;
+    void ResetRun();
+
+    s64 GetDowncount() const;
+
+    void SwitchContext(u64 new_context) {
+        current_context = new_context;
+    }
+
+    bool CanCurrentContextRun() const {
+        return time_slice[current_context] > 0;
+    }
+
+    std::optional<u64> NextAvailableCore(const s64 needed_ticks) const;
 
 private:
     struct Event;
@@ -112,10 +115,16 @@ private:
     /// Clear all pending events. This should ONLY be done on exit.
     void ClearPendingEvents();
 
+    static constexpr u64 num_cpu_cores = 4;
+
     s64 global_timer = 0;
     s64 idled_cycles = 0;
-    int slice_length = 0;
-    int downcount = 0;
+    s64 slice_length = 0;
+    u64 accumulated_ticks = 0;
+    std::array<s64, num_cpu_cores> downcounts{};
+    // Slice of time assigned to each core per run.
+    std::array<s64, num_cpu_cores> time_slice{};
+    u64 current_context = 0;
 
     // Are we in a function that has been called from Advance()
     // If events are scheduled from a function that gets called from Advance(),
@@ -129,13 +138,18 @@ private:
     std::vector<Event> event_queue;
     u64 event_fifo_id = 0;
 
-    // Stores each element separately as a linked list node so pointers to elements
-    // remain stable regardless of rehashes/resizing.
-    std::unordered_map<std::string, EventType> event_types;
-
-    EventType* ev_lost = nullptr;
+    std::shared_ptr<EventType> ev_lost;
 
     std::mutex inner_mutex;
 };
+
+/// Creates a core timing event with the given name and callback.
+///
+/// @param name     The name of the core timing event to create.
+/// @param callback The callback to execute for the event.
+///
+/// @returns An EventType instance representing the created event.
+///
+std::shared_ptr<EventType> CreateEvent(std::string name, TimedCallback&& callback);
 
 } // namespace Core::Timing

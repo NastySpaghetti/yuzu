@@ -5,6 +5,8 @@
 #pragma once
 
 #include <array>
+#include <memory>
+
 #include "common/common_types.h"
 #include "core/hle/kernel/object.h"
 
@@ -31,8 +33,11 @@ constexpr bool IsValidResourceType(ResourceType type) {
 
 class ResourceLimit final : public Object {
 public:
+    explicit ResourceLimit(KernelCore& kernel);
+    ~ResourceLimit() override;
+
     /// Creates a resource limit object.
-    static SharedPtr<ResourceLimit> Create(KernelCore& kernel);
+    static std::shared_ptr<ResourceLimit> Create(KernelCore& kernel);
 
     std::string GetTypeName() const override {
         return "ResourceLimit";
@@ -45,6 +50,11 @@ public:
     HandleType GetHandleType() const override {
         return HANDLE_TYPE;
     }
+
+    bool Reserve(ResourceType resource, s64 amount);
+    bool Reserve(ResourceType resource, s64 amount, u64 timeout);
+    void Release(ResourceType resource, u64 amount);
+    void Release(ResourceType resource, u64 used_amount, u64 available_amount);
 
     /**
      * Gets the current value for the specified resource.
@@ -76,9 +86,6 @@ public:
     ResultCode SetLimitValue(ResourceType resource, s64 value);
 
 private:
-    explicit ResourceLimit(KernelCore& kernel);
-    ~ResourceLimit() override;
-
     // TODO(Subv): Increment resource limit current values in their respective Kernel::T::Create
     // functions
     //
@@ -89,10 +96,9 @@ private:
     using ResourceArray =
         std::array<s64, static_cast<std::size_t>(ResourceType::ResourceTypeCount)>;
 
-    /// Maximum values a resource type may reach.
-    ResourceArray limits{};
-    /// Current resource limit values.
-    ResourceArray values{};
+    ResourceArray limit{};
+    ResourceArray current{};
+    ResourceArray available{};
 };
 
 } // namespace Kernel

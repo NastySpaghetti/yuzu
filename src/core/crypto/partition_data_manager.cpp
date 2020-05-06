@@ -161,7 +161,7 @@ std::array<u8, key_size> FindKeyFromHex(const std::vector<u8>& binary,
 
     std::array<u8, 0x20> temp{};
     for (size_t i = 0; i < binary.size() - key_size; ++i) {
-        mbedtls_sha256(binary.data() + i, key_size, temp.data(), 0);
+        mbedtls_sha256_ret(binary.data() + i, key_size, temp.data(), 0);
 
         if (temp != hash)
             continue;
@@ -189,7 +189,7 @@ static std::array<Key128, 0x20> FindEncryptedMasterKeyFromHex(const std::vector<
     AESCipher<Key128> cipher(key, Mode::ECB);
     for (size_t i = 0; i < binary.size() - 0x10; ++i) {
         cipher.Transcode(binary.data() + i, dec_temp.size(), dec_temp.data(), Op::Decrypt);
-        mbedtls_sha256(dec_temp.data(), dec_temp.size(), temp.data(), 0);
+        mbedtls_sha256_ret(dec_temp.data(), dec_temp.size(), temp.data(), 0);
 
         for (size_t k = 0; k < out.size(); ++k) {
             if (temp == master_key_hashes[k]) {
@@ -202,13 +202,14 @@ static std::array<Key128, 0x20> FindEncryptedMasterKeyFromHex(const std::vector<
     return out;
 }
 
-FileSys::VirtualFile FindFileInDirWithNames(const FileSys::VirtualDir& dir,
-                                            const std::string& name) {
-    auto upper = name;
-    std::transform(upper.begin(), upper.end(), upper.begin(), [](u8 c) { return std::toupper(c); });
+static FileSys::VirtualFile FindFileInDirWithNames(const FileSys::VirtualDir& dir,
+                                                   const std::string& name) {
+    const auto upper = Common::ToUpper(name);
+
     for (const auto& fname : {name, name + ".bin", upper, upper + ".BIN"}) {
-        if (dir->GetFile(fname) != nullptr)
+        if (dir->GetFile(fname) != nullptr) {
             return dir->GetFile(fname);
+        }
     }
 
     return nullptr;
@@ -344,8 +345,7 @@ FileSys::VirtualFile PartitionDataManager::GetPackage2Raw(Package2Type type) con
     return package2.at(static_cast<size_t>(type));
 }
 
-bool AttemptDecrypt(const std::array<u8, 16>& key, Package2Header& header) {
-
+static bool AttemptDecrypt(const std::array<u8, 16>& key, Package2Header& header) {
     const std::vector<u8> iv(header.header_ctr.begin(), header.header_ctr.end());
     Package2Header temp = header;
     AESCipher<Key128> cipher(key, Mode::CTR);

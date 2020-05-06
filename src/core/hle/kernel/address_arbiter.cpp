@@ -8,20 +8,18 @@
 #include "common/assert.h"
 #include "common/common_types.h"
 #include "core/core.h"
-#include "core/core_cpu.h"
 #include "core/hle/kernel/address_arbiter.h"
 #include "core/hle/kernel/errors.h"
-#include "core/hle/kernel/object.h"
-#include "core/hle/kernel/process.h"
 #include "core/hle/kernel/scheduler.h"
 #include "core/hle/kernel/thread.h"
 #include "core/hle/result.h"
 #include "core/memory.h"
 
 namespace Kernel {
-namespace {
+
 // Wake up num_to_wake (or all) threads in a vector.
-void WakeThreads(const std::vector<SharedPtr<Thread>>& waiting_threads, s32 num_to_wake) {
+void AddressArbiter::WakeThreads(const std::vector<std::shared_ptr<Thread>>& waiting_threads,
+                                 s32 num_to_wake) {
     // Only process up to 'target' threads, unless 'target' is <= 0, in which case process
     // them all.
     std::size_t last = waiting_threads.size();
@@ -33,11 +31,12 @@ void WakeThreads(const std::vector<SharedPtr<Thread>>& waiting_threads, s32 num_
     for (std::size_t i = 0; i < last; i++) {
         ASSERT(waiting_threads[i]->GetStatus() == ThreadStatus::WaitArb);
         waiting_threads[i]->SetWaitSynchronizationResult(RESULT_SUCCESS);
+        RemoveThread(waiting_threads[i]);
         waiting_threads[i]->SetArbiterWaitAddress(0);
         waiting_threads[i]->ResumeFromWait();
+        system.PrepareReschedule(waiting_threads[i]->GetProcessorID());
     }
 }
-} // Anonymous namespace
 
 AddressArbiter::AddressArbiter(Core::System& system) : system{system} {}
 AddressArbiter::~AddressArbiter() = default;
@@ -57,51 +56,65 @@ ResultCode AddressArbiter::SignalToAddress(VAddr address, SignalType type, s32 v
 }
 
 ResultCode AddressArbiter::SignalToAddressOnly(VAddr address, s32 num_to_wake) {
-    const std::vector<SharedPtr<Thread>> waiting_threads = GetThreadsWaitingOnAddress(address);
+    const std::vector<std::shared_ptr<Thread>> waiting_threads =
+        GetThreadsWaitingOnAddress(address);
     WakeThreads(waiting_threads, num_to_wake);
     return RESULT_SUCCESS;
 }
 
 ResultCode AddressArbiter::IncrementAndSignalToAddressIfEqual(VAddr address, s32 value,
                                                               s32 num_to_wake) {
+    auto& memory = system.Memory();
+
     // Ensure that we can write to the address.
-    if (!Memory::IsValidVirtualAddress(address)) {
+    if (!memory.IsValidVirtualAddress(address)) {
         return ERR_INVALID_ADDRESS_STATE;
     }
 
-    if (static_cast<s32>(Memory::Read32(address)) != value) {
+    if (static_cast<s32>(memory.Read32(address)) != value) {
         return ERR_INVALID_STATE;
     }
 
-    Memory::Write32(address, static_cast<u32>(value + 1));
+    memory.Write32(address, static_cast<u32>(value + 1));
     return SignalToAddressOnly(address, num_to_wake);
 }
 
 ResultCode AddressArbiter::ModifyByWaitingCountAndSignalToAddressIfEqual(VAddr address, s32 value,
                                                                          s32 num_to_wake) {
+    auto& memory = system.Memory();
+
     // Ensure that we can write to the address.
-    if (!Memory::IsValidVirtualAddress(address)) {
+    if (!memory.IsValidVirtualAddress(address)) {
         return ERR_INVALID_ADDRESS_STATE;
     }
 
     // Get threads waiting on the address.
-    const std::vector<SharedPtr<Thread>> waiting_threads = GetThreadsWaitingOnAddress(address);
+    const std::vector<std::shared_ptr<Thread>> waiting_threads =
+        GetThreadsWaitingOnAddress(address);
 
     // Determine the modified value depending on the waiting count.
     s32 updated_value;
-    if (waiting_threads.empty()) {
-        updated_value = value + 1;
-    } else if (num_to_wake <= 0 || waiting_threads.size() <= static_cast<u32>(num_to_wake)) {
-        updated_value = value - 1;
+    if (num_to_wake <= 0) {
+        if (waiting_threads.empty()) {
+            updated_value = value + 1;
+        } else {
+            updated_value = value - 1;
+        }
     } else {
-        updated_value = value;
+        if (waiting_threads.empty()) {
+            updated_value = value + 1;
+        } else if (waiting_threads.size() <= static_cast<u32>(num_to_wake)) {
+            updated_value = value - 1;
+        } else {
+            updated_value = value;
+        }
     }
 
-    if (static_cast<s32>(Memory::Read32(address)) != value) {
+    if (static_cast<s32>(memory.Read32(address)) != value) {
         return ERR_INVALID_STATE;
     }
 
-    Memory::Write32(address, static_cast<u32>(updated_value));
+    memory.Write32(address, static_cast<u32>(updated_value));
     WakeThreads(waiting_threads, num_to_wake);
     return RESULT_SUCCESS;
 }
@@ -122,18 +135,20 @@ ResultCode AddressArbiter::WaitForAddress(VAddr address, ArbitrationType type, s
 
 ResultCode AddressArbiter::WaitForAddressIfLessThan(VAddr address, s32 value, s64 timeout,
                                                     bool should_decrement) {
+    auto& memory = system.Memory();
+
     // Ensure that we can read the address.
-    if (!Memory::IsValidVirtualAddress(address)) {
+    if (!memory.IsValidVirtualAddress(address)) {
         return ERR_INVALID_ADDRESS_STATE;
     }
 
-    const s32 cur_value = static_cast<s32>(Memory::Read32(address));
+    const s32 cur_value = static_cast<s32>(memory.Read32(address));
     if (cur_value >= value) {
         return ERR_INVALID_STATE;
     }
 
     if (should_decrement) {
-        Memory::Write32(address, static_cast<u32>(cur_value - 1));
+        memory.Write32(address, static_cast<u32>(cur_value - 1));
     }
 
     // Short-circuit without rescheduling, if timeout is zero.
@@ -145,15 +160,19 @@ ResultCode AddressArbiter::WaitForAddressIfLessThan(VAddr address, s32 value, s6
 }
 
 ResultCode AddressArbiter::WaitForAddressIfEqual(VAddr address, s32 value, s64 timeout) {
+    auto& memory = system.Memory();
+
     // Ensure that we can read the address.
-    if (!Memory::IsValidVirtualAddress(address)) {
+    if (!memory.IsValidVirtualAddress(address)) {
         return ERR_INVALID_ADDRESS_STATE;
     }
+
     // Only wait for the address if equal.
-    if (static_cast<s32>(Memory::Read32(address)) != value) {
+    if (static_cast<s32>(memory.Read32(address)) != value) {
         return ERR_INVALID_STATE;
     }
-    // Short-circuit without rescheduling, if timeout is zero.
+
+    // Short-circuit without rescheduling if timeout is zero.
     if (timeout == 0) {
         return RESULT_TIMEOUT;
     }
@@ -162,44 +181,59 @@ ResultCode AddressArbiter::WaitForAddressIfEqual(VAddr address, s32 value, s64 t
 }
 
 ResultCode AddressArbiter::WaitForAddressImpl(VAddr address, s64 timeout) {
-    SharedPtr<Thread> current_thread = system.CurrentScheduler().GetCurrentThread();
+    Thread* current_thread = system.CurrentScheduler().GetCurrentThread();
     current_thread->SetArbiterWaitAddress(address);
+    InsertThread(SharedFrom(current_thread));
     current_thread->SetStatus(ThreadStatus::WaitArb);
     current_thread->InvalidateWakeupCallback();
-
     current_thread->WakeAfterDelay(timeout);
 
-    system.CpuCore(current_thread->GetProcessorID()).PrepareReschedule();
+    system.PrepareReschedule(current_thread->GetProcessorID());
     return RESULT_TIMEOUT;
 }
 
-std::vector<SharedPtr<Thread>> AddressArbiter::GetThreadsWaitingOnAddress(VAddr address) const {
-    const auto RetrieveWaitingThreads = [this](std::size_t core_index,
-                                               std::vector<SharedPtr<Thread>>& waiting_threads,
-                                               VAddr arb_addr) {
-        const auto& scheduler = system.Scheduler(core_index);
-        const auto& thread_list = scheduler.GetThreadList();
+void AddressArbiter::HandleWakeupThread(std::shared_ptr<Thread> thread) {
+    ASSERT(thread->GetStatus() == ThreadStatus::WaitArb);
+    RemoveThread(thread);
+    thread->SetArbiterWaitAddress(0);
+}
 
-        for (const auto& thread : thread_list) {
-            if (thread->GetArbiterWaitAddress() == arb_addr) {
-                waiting_threads.push_back(thread);
-            }
-        }
-    };
+void AddressArbiter::InsertThread(std::shared_ptr<Thread> thread) {
+    const VAddr arb_addr = thread->GetArbiterWaitAddress();
+    std::list<std::shared_ptr<Thread>>& thread_list = arb_threads[arb_addr];
 
-    // Retrieve all threads that are waiting for this address.
-    std::vector<SharedPtr<Thread>> threads;
-    RetrieveWaitingThreads(0, threads, address);
-    RetrieveWaitingThreads(1, threads, address);
-    RetrieveWaitingThreads(2, threads, address);
-    RetrieveWaitingThreads(3, threads, address);
+    const auto iter =
+        std::find_if(thread_list.cbegin(), thread_list.cend(), [&thread](const auto& entry) {
+            return entry->GetPriority() >= thread->GetPriority();
+        });
 
-    // Sort them by priority, such that the highest priority ones come first.
-    std::sort(threads.begin(), threads.end(),
-              [](const SharedPtr<Thread>& lhs, const SharedPtr<Thread>& rhs) {
-                  return lhs->GetPriority() < rhs->GetPriority();
-              });
+    if (iter == thread_list.cend()) {
+        thread_list.push_back(std::move(thread));
+    } else {
+        thread_list.insert(iter, std::move(thread));
+    }
+}
 
-    return threads;
+void AddressArbiter::RemoveThread(std::shared_ptr<Thread> thread) {
+    const VAddr arb_addr = thread->GetArbiterWaitAddress();
+    std::list<std::shared_ptr<Thread>>& thread_list = arb_threads[arb_addr];
+
+    const auto iter = std::find_if(thread_list.cbegin(), thread_list.cend(),
+                                   [&thread](const auto& entry) { return thread == entry; });
+
+    ASSERT(iter != thread_list.cend());
+
+    thread_list.erase(iter);
+}
+
+std::vector<std::shared_ptr<Thread>> AddressArbiter::GetThreadsWaitingOnAddress(
+    VAddr address) const {
+    const auto iter = arb_threads.find(address);
+    if (iter == arb_threads.cend()) {
+        return {};
+    }
+
+    const std::list<std::shared_ptr<Thread>>& thread_list = iter->second;
+    return {thread_list.cbegin(), thread_list.cend()};
 }
 } // namespace Kernel

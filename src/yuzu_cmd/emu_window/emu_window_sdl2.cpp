@@ -13,7 +13,7 @@
 #include "input_common/sdl/sdl.h"
 #include "yuzu_cmd/emu_window/emu_window_sdl2.h"
 
-EmuWindow_SDL2::EmuWindow_SDL2(bool fullscreen) {
+EmuWindow_SDL2::EmuWindow_SDL2(Core::System& system, bool fullscreen) : system{system} {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) < 0) {
         LOG_CRITICAL(Frontend, "Failed to initialize SDL2! Exiting...");
         exit(1);
@@ -87,6 +87,10 @@ void EmuWindow_SDL2::OnKeyEvent(int key, u8 state) {
 
 bool EmuWindow_SDL2::IsOpen() const {
     return is_open;
+}
+
+bool EmuWindow_SDL2::IsShown() const {
+    return is_shown;
 }
 
 void EmuWindow_SDL2::OnResize() {
@@ -177,9 +181,10 @@ void EmuWindow_SDL2::PollEvents() {
     const u32 current_time = SDL_GetTicks();
     if (current_time > last_time + 2000) {
         const auto results = Core::System::GetInstance().GetAndResetPerfStats();
-        const auto title = fmt::format(
-            "yuzu {} | {}-{} | FPS: {:.0f} ({:.0%})", Common::g_build_fullname,
-            Common::g_scm_branch, Common::g_scm_desc, results.game_fps, results.emulation_speed);
+        const auto title =
+            fmt::format("yuzu {} | {}-{} | FPS: {:.0f} ({:.0f}%)", Common::g_build_fullname,
+                        Common::g_scm_branch, Common::g_scm_desc, results.game_fps,
+                        results.emulation_speed * 100.0);
         SDL_SetWindowTitle(render_window, title.c_str());
         last_time = current_time;
     }

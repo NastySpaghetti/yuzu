@@ -5,7 +5,7 @@
 #pragma once
 
 #include "core/hle/kernel/object.h"
-#include "core/hle/kernel/wait_object.h"
+#include "core/hle/kernel/synchronization_object.h"
 
 union ResultCode;
 
@@ -14,7 +14,7 @@ namespace Kernel {
 class KernelCore;
 class WritableEvent;
 
-class ReadableEvent final : public WaitObject {
+class ReadableEvent final : public SynchronizationObject {
     friend class WritableEvent;
 
 public:
@@ -25,10 +25,6 @@ public:
     }
     std::string GetName() const override {
         return name;
-    }
-
-    ResetType GetResetType() const {
-        return reset_type;
     }
 
     static constexpr HandleType HANDLE_TYPE = HandleType::ReadableEvent;
@@ -50,13 +46,10 @@ public:
     ///      then ERR_INVALID_STATE will be returned.
     ResultCode Reset();
 
+    void Signal() override;
+
 private:
     explicit ReadableEvent(KernelCore& kernel);
-
-    void Signal();
-
-    ResetType reset_type;
-    bool signaled;
 
     std::string name; ///< Name of event (optional)
 };

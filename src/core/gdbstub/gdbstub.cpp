@@ -35,11 +35,11 @@
 #include "common/swap.h"
 #include "core/arm/arm_interface.h"
 #include "core/core.h"
-#include "core/core_cpu.h"
+#include "core/core_manager.h"
 #include "core/gdbstub/gdbstub.h"
+#include "core/hle/kernel/memory/page_table.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/scheduler.h"
-#include "core/hle/kernel/vm_manager.h"
 #include "core/loader/loader.h"
 #include "core/memory.h"
 
@@ -141,6 +141,7 @@ constexpr char target_xml[] =
 )";
 
 int gdbserver_socket = -1;
+bool defer_start = false;
 
 u8 command_buffer[GDB_BUFFER_SIZE];
 u32 command_length;
@@ -202,13 +203,11 @@ void RegisterModule(std::string name, VAddr beg, VAddr end, bool add_elf_ext) {
 }
 
 static Kernel::Thread* FindThreadById(s64 id) {
-    for (u32 core = 0; core < Core::NUM_CPU_CORES; core++) {
-        const auto& threads = Core::System::GetInstance().Scheduler(core).GetThreadList();
-        for (auto& thread : threads) {
-            if (thread->GetThreadID() == static_cast<u64>(id)) {
-                current_core = core;
-                return thread.get();
-            }
+    const auto& threads = Core::System::GetInstance().GlobalScheduler().GetThreadList();
+    for (auto& thread : threads) {
+        if (thread->GetThreadID() == static_cast<u64>(id)) {
+            current_core = thread->GetProcessorID();
+            return thread.get();
         }
     }
     return nullptr;
@@ -219,7 +218,7 @@ static u64 RegRead(std::size_t id, Kernel::Thread* thread = nullptr) {
         return 0;
     }
 
-    const auto& thread_context = thread->GetContext();
+    const auto& thread_context = thread->GetContext64();
 
     if (id < SP_REGISTER) {
         return thread_context.cpu_registers[id];
@@ -241,7 +240,7 @@ static void RegWrite(std::size_t id, u64 val, Kernel::Thread* thread = nullptr) 
         return;
     }
 
-    auto& thread_context = thread->GetContext();
+    auto& thread_context = thread->GetContext64();
 
     if (id < SP_REGISTER) {
         thread_context.cpu_registers[id] = val;
@@ -261,7 +260,7 @@ static u128 FpuRead(std::size_t id, Kernel::Thread* thread = nullptr) {
         return u128{0};
     }
 
-    auto& thread_context = thread->GetContext();
+    auto& thread_context = thread->GetContext64();
 
     if (id >= UC_ARM64_REG_Q0 && id < FPCR_REGISTER) {
         return thread_context.vector_registers[id - UC_ARM64_REG_Q0];
@@ -277,7 +276,7 @@ static void FpuWrite(std::size_t id, u128 val, Kernel::Thread* thread = nullptr)
         return;
     }
 
-    auto& thread_context = thread->GetContext();
+    auto& thread_context = thread->GetContext64();
 
     if (id >= UC_ARM64_REG_Q0 && id < FPCR_REGISTER) {
         thread_context.vector_registers[id - UC_ARM64_REG_Q0] = val;
@@ -470,7 +469,8 @@ static u8 ReadByte() {
 
 /// Calculate the checksum of the current command buffer.
 static u8 CalculateChecksum(const u8* buffer, std::size_t length) {
-    return static_cast<u8>(std::accumulate(buffer, buffer + length, 0, std::plus<u8>()));
+    return static_cast<u8>(std::accumulate(buffer, buffer + length, u8{0},
+                                           [](u8 lhs, u8 rhs) { return u8(lhs + rhs); }));
 }
 
 /**
@@ -509,8 +509,9 @@ static void RemoveBreakpoint(BreakpointType type, VAddr addr) {
               bp->second.len, bp->second.addr, static_cast<int>(type));
 
     if (type == BreakpointType::Execute) {
-        Memory::WriteBlock(bp->second.addr, bp->second.inst.data(), bp->second.inst.size());
-        Core::System::GetInstance().InvalidateCpuInstructionCaches();
+        auto& system = Core::System::GetInstance();
+        system.Memory().WriteBlock(bp->second.addr, bp->second.inst.data(), bp->second.inst.size());
+        system.InvalidateCpuInstructionCaches();
     }
     p.erase(addr);
 }
@@ -641,16 +642,15 @@ static void HandleQuery() {
                        strlen("Xfer:features:read:target.xml:")) == 0) {
         SendReply(target_xml);
     } else if (strncmp(query, "Offsets", strlen("Offsets")) == 0) {
-        const VAddr base_address = Core::CurrentProcess()->VMManager().GetCodeRegionBaseAddress();
+        const VAddr base_address =
+            Core::System::GetInstance().CurrentProcess()->PageTable().GetCodeRegionStart();
         std::string buffer = fmt::format("TextSeg={:0x}", base_address);
         SendReply(buffer.c_str());
     } else if (strncmp(query, "fThreadInfo", strlen("fThreadInfo")) == 0) {
         std::string val = "m";
-        for (u32 core = 0; core < Core::NUM_CPU_CORES; core++) {
-            const auto& threads = Core::System::GetInstance().Scheduler(core).GetThreadList();
-            for (const auto& thread : threads) {
-                val += fmt::format("{:x},", thread->GetThreadID());
-            }
+        const auto& threads = Core::System::GetInstance().GlobalScheduler().GetThreadList();
+        for (const auto& thread : threads) {
+            val += fmt::format("{:x},", thread->GetThreadID());
         }
         val.pop_back();
         SendReply(val.c_str());
@@ -660,13 +660,11 @@ static void HandleQuery() {
         std::string buffer;
         buffer += "l<?xml version=\"1.0\"?>";
         buffer += "<threads>";
-        for (u32 core = 0; core < Core::NUM_CPU_CORES; core++) {
-            const auto& threads = Core::System::GetInstance().Scheduler(core).GetThreadList();
-            for (const auto& thread : threads) {
-                buffer +=
-                    fmt::format(R"*(<thread id="{:x}" core="{:d}" name="Thread {:x}"></thread>)*",
-                                thread->GetThreadID(), core, thread->GetThreadID());
-            }
+        const auto& threads = Core::System::GetInstance().GlobalScheduler().GetThreadList();
+        for (const auto& thread : threads) {
+            buffer +=
+                fmt::format(R"*(<thread id="{:x}" core="{:d}" name="Thread {:x}"></thread>)*",
+                            thread->GetThreadID(), thread->GetProcessorID(), thread->GetThreadID());
         }
         buffer += "</threads>";
         SendReply(buffer.c_str());
@@ -919,7 +917,7 @@ static void WriteRegister() {
     // Update ARM context, skipping scheduler - no running threads at this point
     Core::System::GetInstance()
         .ArmInterface(current_core)
-        .LoadContext(current_thread->GetContext());
+        .LoadContext(current_thread->GetContext64());
 
     SendReply("OK");
 }
@@ -950,7 +948,7 @@ static void WriteRegisters() {
     // Update ARM context, skipping scheduler - no running threads at this point
     Core::System::GetInstance()
         .ArmInterface(current_core)
-        .LoadContext(current_thread->GetContext());
+        .LoadContext(current_thread->GetContext64());
 
     SendReply("OK");
 }
@@ -973,12 +971,13 @@ static void ReadMemory() {
         SendReply("E01");
     }
 
-    if (!Memory::IsValidVirtualAddress(addr)) {
+    auto& memory = Core::System::GetInstance().Memory();
+    if (!memory.IsValidVirtualAddress(addr)) {
         return SendReply("E00");
     }
 
     std::vector<u8> data(len);
-    Memory::ReadBlock(addr, data.data(), len);
+    memory.ReadBlock(addr, data.data(), len);
 
     MemToGdbHex(reply, data.data(), len);
     reply[len * 2] = '\0';
@@ -988,22 +987,23 @@ static void ReadMemory() {
 /// Modify location in memory with data received from the gdb client.
 static void WriteMemory() {
     auto start_offset = command_buffer + 1;
-    auto addr_pos = std::find(start_offset, command_buffer + command_length, ',');
-    VAddr addr = HexToLong(start_offset, static_cast<u64>(addr_pos - start_offset));
+    const auto addr_pos = std::find(start_offset, command_buffer + command_length, ',');
+    const VAddr addr = HexToLong(start_offset, static_cast<u64>(addr_pos - start_offset));
 
     start_offset = addr_pos + 1;
-    auto len_pos = std::find(start_offset, command_buffer + command_length, ':');
-    u64 len = HexToLong(start_offset, static_cast<u64>(len_pos - start_offset));
+    const auto len_pos = std::find(start_offset, command_buffer + command_length, ':');
+    const u64 len = HexToLong(start_offset, static_cast<u64>(len_pos - start_offset));
 
-    if (!Memory::IsValidVirtualAddress(addr)) {
+    auto& system = Core::System::GetInstance();
+    auto& memory = system.Memory();
+    if (!memory.IsValidVirtualAddress(addr)) {
         return SendReply("E00");
     }
 
     std::vector<u8> data(len);
-
     GdbHexToMem(data.data(), len_pos + 1, len);
-    Memory::WriteBlock(addr, data.data(), len);
-    Core::System::GetInstance().InvalidateCpuInstructionCaches();
+    memory.WriteBlock(addr, data.data(), len);
+    system.InvalidateCpuInstructionCaches();
     SendReply("OK");
 }
 
@@ -1020,7 +1020,7 @@ static void Step() {
         // Update ARM context, skipping scheduler - no running threads at this point
         Core::System::GetInstance()
             .ArmInterface(current_core)
-            .LoadContext(current_thread->GetContext());
+            .LoadContext(current_thread->GetContext64());
     }
     step_loop = true;
     halt_loop = true;
@@ -1059,12 +1059,15 @@ static bool CommitBreakpoint(BreakpointType type, VAddr addr, u64 len) {
     breakpoint.active = true;
     breakpoint.addr = addr;
     breakpoint.len = len;
-    Memory::ReadBlock(addr, breakpoint.inst.data(), breakpoint.inst.size());
+
+    auto& system = Core::System::GetInstance();
+    auto& memory = system.Memory();
+    memory.ReadBlock(addr, breakpoint.inst.data(), breakpoint.inst.size());
 
     static constexpr std::array<u8, 4> btrap{0x00, 0x7d, 0x20, 0xd4};
     if (type == BreakpointType::Execute) {
-        Memory::WriteBlock(addr, btrap.data(), btrap.size());
-        Core::System::GetInstance().InvalidateCpuInstructionCaches();
+        memory.WriteBlock(addr, btrap.data(), btrap.size());
+        system.InvalidateCpuInstructionCaches();
     }
     p.insert({addr, breakpoint});
 
@@ -1164,6 +1167,9 @@ static void RemoveBreakpoint() {
 
 void HandlePacket() {
     if (!IsConnected()) {
+        if (defer_start) {
+            ToggleServer(true);
+        }
         return;
     }
 
@@ -1254,6 +1260,10 @@ void ToggleServer(bool status) {
     }
 }
 
+void DeferStart() {
+    defer_start = true;
+}
+
 static void Init(u16 port) {
     if (!server_enabled) {
         // Set the halt loop to false in case the user enabled the gdbstub mid-execution.
@@ -1339,6 +1349,7 @@ void Shutdown() {
     if (!server_enabled) {
         return;
     }
+    defer_start = false;
 
     LOG_INFO(Debug_GDBStub, "Stopping GDB ...");
     if (gdbserver_socket != -1) {
@@ -1378,10 +1389,9 @@ void SendTrap(Kernel::Thread* thread, int trap) {
         return;
     }
 
-    if (!halt_loop || current_thread == thread) {
-        current_thread = thread;
-        SendSignal(thread, trap);
-    }
+    current_thread = thread;
+    SendSignal(thread, trap);
+
     halt_loop = true;
     send_trap = false;
 }

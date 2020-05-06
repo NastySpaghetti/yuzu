@@ -11,9 +11,10 @@
 #include "common/string_util.h"
 #include "core/arm/exclusive_monitor.h"
 #include "core/core.h"
-#include "core/core_cpu.h"
+#include "core/core_manager.h"
 #include "core/core_timing.h"
-#include "core/cpu_core_manager.h"
+#include "core/cpu_manager.h"
+#include "core/device_memory.h"
 #include "core/file_sys/bis_factory.h"
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/mode.h"
@@ -28,6 +29,7 @@
 #include "core/hardware_interrupt_manager.h"
 #include "core/hle/kernel/client_port.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/physical_core.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/scheduler.h"
 #include "core/hle/kernel/thread.h"
@@ -35,16 +37,17 @@
 #include "core/hle/service/apm/controller.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/hle/service/glue/manager.h"
+#include "core/hle/service/lm/manager.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/loader/loader.h"
+#include "core/memory.h"
 #include "core/memory/cheat_engine.h"
 #include "core/perf_stats.h"
 #include "core/reporter.h"
 #include "core/settings.h"
 #include "core/telemetry_session.h"
 #include "core/tools/freezer.h"
-#include "video_core/debug_utils/debug_utils.h"
 #include "video_core/renderer_base.h"
 #include "video_core/video_core.h"
 
@@ -111,16 +114,26 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
 }
 struct System::Impl {
     explicit Impl(System& system)
-        : kernel{system}, cpu_core_manager{system}, applet_manager{system}, reporter{system} {}
+        : kernel{system}, fs_controller{system}, memory{system},
+          cpu_manager{system}, reporter{system}, applet_manager{system} {}
 
-    Cpu& CurrentCpuCore() {
-        return cpu_core_manager.GetCurrentCore();
+    CoreManager& CurrentCoreManager() {
+        return cpu_manager.GetCurrentCoreManager();
+    }
+
+    Kernel::PhysicalCore& CurrentPhysicalCore() {
+        const auto index = cpu_manager.GetActiveCoreIndex();
+        return kernel.PhysicalCore(index);
+    }
+
+    Kernel::PhysicalCore& GetPhysicalCore(std::size_t index) {
+        return kernel.PhysicalCore(index);
     }
 
     ResultStatus RunLoop(bool tight_loop) {
         status = ResultStatus::Success;
 
-        cpu_core_manager.RunLoop(tight_loop);
+        cpu_manager.RunLoop(tight_loop);
 
         return status;
     }
@@ -128,9 +141,11 @@ struct System::Impl {
     ResultStatus Init(System& system, Frontend::EmuWindow& emu_window) {
         LOG_DEBUG(HW_Memory, "initialized OK");
 
+        device_memory = std::make_unique<Core::DeviceMemory>(system);
+
         core_timing.Initialize();
-        cpu_core_manager.Initialize();
         kernel.Initialize();
+        cpu_manager.Initialize();
 
         const auto current_time = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch());
@@ -153,14 +168,14 @@ struct System::Impl {
         service_manager = std::make_shared<Service::SM::ServiceManager>();
 
         Service::Init(service_manager, system);
-        GDBStub::Init();
+        GDBStub::DeferStart();
 
-        renderer = VideoCore::CreateRenderer(emu_window, system);
-        if (!renderer->Init()) {
+        interrupt_manager = std::make_unique<Core::Hardware::InterruptManager>(system);
+        gpu_core = VideoCore::CreateGPU(emu_window, system);
+        if (!gpu_core) {
             return ResultStatus::ErrorVideoCore;
         }
-        interrupt_manager = std::make_unique<Core::Hardware::InterruptManager>(system);
-        gpu_core = VideoCore::CreateGPU(system);
+        gpu_core->Renderer().Rasterizer().SetupDirtyFlags();
 
         is_powered_on = true;
         exit_lock = false;
@@ -200,11 +215,6 @@ struct System::Impl {
         AddGlueRegistrationForProcess(*app_loader, *main_process);
         kernel.MakeCurrentProcess(main_process.get());
 
-        // Main process has been loaded and been made current.
-        // Begin GPU and CPU execution.
-        gpu_core->Start();
-        cpu_core_manager.StartThreads();
-
         // Initialize cheat engine
         if (cheat_engine) {
             cheat_engine->Initialize();
@@ -238,22 +248,30 @@ struct System::Impl {
     }
 
     void Shutdown() {
-        // Log last frame performance stats
-        const auto perf_results = GetAndResetPerfStats();
-        telemetry_session->AddField(Telemetry::FieldType::Performance, "Shutdown_EmulationSpeed",
-                                    perf_results.emulation_speed * 100.0);
-        telemetry_session->AddField(Telemetry::FieldType::Performance, "Shutdown_Framerate",
-                                    perf_results.game_fps);
-        telemetry_session->AddField(Telemetry::FieldType::Performance, "Shutdown_Frametime",
-                                    perf_results.frametime * 1000.0);
-        telemetry_session->AddField(Telemetry::FieldType::Performance, "Mean_Frametime_MS",
-                                    perf_stats->GetMeanFrametime());
+        // Log last frame performance stats if game was loded
+        if (perf_stats) {
+            const auto perf_results = GetAndResetPerfStats();
+            telemetry_session->AddField(Telemetry::FieldType::Performance,
+                                        "Shutdown_EmulationSpeed",
+                                        perf_results.emulation_speed * 100.0);
+            telemetry_session->AddField(Telemetry::FieldType::Performance, "Shutdown_Framerate",
+                                        perf_results.game_fps);
+            telemetry_session->AddField(Telemetry::FieldType::Performance, "Shutdown_Frametime",
+                                        perf_results.frametime * 1000.0);
+            telemetry_session->AddField(Telemetry::FieldType::Performance, "Mean_Frametime_MS",
+                                        perf_stats->GetMeanFrametime());
+        }
+
+        lm_manager.Flush();
 
         is_powered_on = false;
         exit_lock = false;
 
+        if (gpu_core) {
+            gpu_core->WaitIdle();
+        }
+
         // Shutdown emulation session
-        renderer.reset();
         GDBStub::Shutdown();
         Service::Shutdown();
         service_manager.reset();
@@ -261,9 +279,10 @@ struct System::Impl {
         telemetry_session.reset();
         perf_stats.reset();
         gpu_core.reset();
+        device_memory.reset();
 
         // Close all CPU/threading state
-        cpu_core_manager.Shutdown();
+        cpu_manager.Shutdown();
 
         // Shutdown kernel and core timing
         kernel.Shutdown();
@@ -329,14 +348,15 @@ struct System::Impl {
     Service::FileSystem::FileSystemController fs_controller;
     /// AppLoader used to load the current executing application
     std::unique_ptr<Loader::AppLoader> app_loader;
-    std::unique_ptr<VideoCore::RendererBase> renderer;
     std::unique_ptr<Tegra::GPU> gpu_core;
-    std::shared_ptr<Tegra::DebugContext> debug_context;
-    std::unique_ptr<Core::Hardware::InterruptManager> interrupt_manager;
-    CpuCoreManager cpu_core_manager;
+    std::unique_ptr<Hardware::InterruptManager> interrupt_manager;
+    std::unique_ptr<Core::DeviceMemory> device_memory;
+    Core::Memory::Memory memory;
+    CpuManager cpu_manager;
     bool is_powered_on = false;
     bool exit_lock = false;
 
+    Reporter reporter;
     std::unique_ptr<Memory::CheatEngine> cheat_engine;
     std::unique_ptr<Tools::Freezer> memory_freezer;
     std::array<u8, 0x20> build_id{};
@@ -347,16 +367,15 @@ struct System::Impl {
     /// APM (Performance) services
     Service::APM::Controller apm_controller{core_timing};
 
-    /// Glue services
+    /// Service State
     Service::Glue::ARPManager arp_manager;
+    Service::LM::Manager lm_manager{reporter};
 
     /// Service manager
     std::shared_ptr<Service::SM::ServiceManager> service_manager;
 
     /// Telemetry session for this emulation session
     std::unique_ptr<Core::TelemetrySession> telemetry_session;
-
-    Reporter reporter;
 
     ResultStatus status = ResultStatus::Success;
     std::string status_details = "";
@@ -368,12 +387,12 @@ struct System::Impl {
 System::System() : impl{std::make_unique<Impl>(*this)} {}
 System::~System() = default;
 
-Cpu& System::CurrentCpuCore() {
-    return impl->CurrentCpuCore();
+CoreManager& System::CurrentCoreManager() {
+    return impl->CurrentCoreManager();
 }
 
-const Cpu& System::CurrentCpuCore() const {
-    return impl->CurrentCpuCore();
+const CoreManager& System::CurrentCoreManager() const {
+    return impl->CurrentCoreManager();
 }
 
 System::ResultStatus System::RunLoop(bool tight_loop) {
@@ -385,7 +404,7 @@ System::ResultStatus System::SingleStep() {
 }
 
 void System::InvalidateCpuInstructionCaches() {
-    impl->cpu_core_manager.InvalidateAllInstructionCaches();
+    impl->kernel.InvalidateAllInstructionCaches();
 }
 
 System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::string& filepath) {
@@ -397,7 +416,11 @@ bool System::IsPoweredOn() const {
 }
 
 void System::PrepareReschedule() {
-    CurrentCpuCore().PrepareReschedule();
+    impl->CurrentPhysicalCore().Stop();
+}
+
+void System::PrepareReschedule(const u32 core_index) {
+    impl->kernel.PrepareReschedule(core_index);
 }
 
 PerfStatsResults System::GetAndResetPerfStats() {
@@ -413,35 +436,53 @@ const TelemetrySession& System::TelemetrySession() const {
 }
 
 ARM_Interface& System::CurrentArmInterface() {
-    return CurrentCpuCore().ArmInterface();
+    return impl->CurrentPhysicalCore().ArmInterface();
 }
 
 const ARM_Interface& System::CurrentArmInterface() const {
-    return CurrentCpuCore().ArmInterface();
+    return impl->CurrentPhysicalCore().ArmInterface();
 }
 
 std::size_t System::CurrentCoreIndex() const {
-    return CurrentCpuCore().CoreIndex();
+    return impl->cpu_manager.GetActiveCoreIndex();
 }
 
 Kernel::Scheduler& System::CurrentScheduler() {
-    return CurrentCpuCore().Scheduler();
+    return impl->CurrentPhysicalCore().Scheduler();
 }
 
 const Kernel::Scheduler& System::CurrentScheduler() const {
-    return CurrentCpuCore().Scheduler();
+    return impl->CurrentPhysicalCore().Scheduler();
 }
 
 Kernel::Scheduler& System::Scheduler(std::size_t core_index) {
-    return CpuCore(core_index).Scheduler();
+    return impl->GetPhysicalCore(core_index).Scheduler();
 }
 
 const Kernel::Scheduler& System::Scheduler(std::size_t core_index) const {
-    return CpuCore(core_index).Scheduler();
+    return impl->GetPhysicalCore(core_index).Scheduler();
+}
+
+/// Gets the global scheduler
+Kernel::GlobalScheduler& System::GlobalScheduler() {
+    return impl->kernel.GlobalScheduler();
+}
+
+/// Gets the global scheduler
+const Kernel::GlobalScheduler& System::GlobalScheduler() const {
+    return impl->kernel.GlobalScheduler();
 }
 
 Kernel::Process* System::CurrentProcess() {
     return impl->kernel.CurrentProcess();
+}
+
+Core::DeviceMemory& System::DeviceMemory() {
+    return *impl->device_memory;
+}
+
+const Core::DeviceMemory& System::DeviceMemory() const {
+    return *impl->device_memory;
 }
 
 const Kernel::Process* System::CurrentProcess() const {
@@ -449,28 +490,36 @@ const Kernel::Process* System::CurrentProcess() const {
 }
 
 ARM_Interface& System::ArmInterface(std::size_t core_index) {
-    return CpuCore(core_index).ArmInterface();
+    return impl->GetPhysicalCore(core_index).ArmInterface();
 }
 
 const ARM_Interface& System::ArmInterface(std::size_t core_index) const {
-    return CpuCore(core_index).ArmInterface();
+    return impl->GetPhysicalCore(core_index).ArmInterface();
 }
 
-Cpu& System::CpuCore(std::size_t core_index) {
-    return impl->cpu_core_manager.GetCore(core_index);
+CoreManager& System::GetCoreManager(std::size_t core_index) {
+    return impl->cpu_manager.GetCoreManager(core_index);
 }
 
-const Cpu& System::CpuCore(std::size_t core_index) const {
+const CoreManager& System::GetCoreManager(std::size_t core_index) const {
     ASSERT(core_index < NUM_CPU_CORES);
-    return impl->cpu_core_manager.GetCore(core_index);
+    return impl->cpu_manager.GetCoreManager(core_index);
 }
 
 ExclusiveMonitor& System::Monitor() {
-    return impl->cpu_core_manager.GetExclusiveMonitor();
+    return impl->kernel.GetExclusiveMonitor();
 }
 
 const ExclusiveMonitor& System::Monitor() const {
-    return impl->cpu_core_manager.GetExclusiveMonitor();
+    return impl->kernel.GetExclusiveMonitor();
+}
+
+Memory::Memory& System::Memory() {
+    return impl->memory;
+}
+
+const Core::Memory::Memory& System::Memory() const {
+    return impl->memory;
 }
 
 Tegra::GPU& System::GPU() {
@@ -490,11 +539,11 @@ const Core::Hardware::InterruptManager& System::InterruptManager() const {
 }
 
 VideoCore::RendererBase& System::Renderer() {
-    return *impl->renderer;
+    return impl->gpu_core->Renderer();
 }
 
 const VideoCore::RendererBase& System::Renderer() const {
-    return *impl->renderer;
+    return impl->gpu_core->Renderer();
 }
 
 Kernel::KernelCore& System::Kernel() {
@@ -543,14 +592,6 @@ const std::string& System::GetStatusDetails() const {
 
 Loader::AppLoader& System::GetAppLoader() const {
     return *impl->app_loader;
-}
-
-void System::SetGPUDebugContext(std::shared_ptr<Tegra::DebugContext> context) {
-    impl->debug_context = std::move(context);
-}
-
-Tegra::DebugContext* System::GetGPUDebugContext() const {
-    return impl->debug_context.get();
 }
 
 void System::SetFilesystem(std::shared_ptr<FileSys::VfsFilesystem> vfs) {
@@ -633,6 +674,14 @@ const Service::APM::Controller& System::GetAPMController() const {
     return impl->apm_controller;
 }
 
+Service::LM::Manager& System::GetLogManager() {
+    return impl->lm_manager;
+}
+
+const Service::LM::Manager& System::GetLogManager() const {
+    return impl->lm_manager;
+}
+
 void System::SetExitLock(bool locked) {
     impl->exit_lock = locked;
 }
@@ -641,11 +690,11 @@ bool System::GetExitLock() const {
     return impl->exit_lock;
 }
 
-void System::SetCurrentProcessBuildID(std::array<u8, 32> id) {
+void System::SetCurrentProcessBuildID(const CurrentBuildProcessID& id) {
     impl->build_id = id;
 }
 
-const std::array<u8, 32>& System::GetCurrentProcessBuildID() const {
+const System::CurrentBuildProcessID& System::GetCurrentProcessBuildID() const {
     return impl->build_id;
 }
 
@@ -663,6 +712,14 @@ Service::SM::ServiceManager& System::ServiceManager() {
 
 const Service::SM::ServiceManager& System::ServiceManager() const {
     return *impl->service_manager;
+}
+
+void System::RegisterCoreThread(std::size_t id) {
+    impl->kernel.RegisterCoreThread(id);
+}
+
+void System::RegisterHostThread() {
+    impl->kernel.RegisterHostThread();
 }
 
 } // namespace Core

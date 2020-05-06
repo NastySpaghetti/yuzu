@@ -28,30 +28,35 @@ void ServiceManager::InvokeControlRequest(Kernel::HLERequestContext& context) {
 
 static ResultCode ValidateServiceName(const std::string& name) {
     if (name.size() <= 0 || name.size() > 8) {
+        LOG_ERROR(Service_SM, "Invalid service name! service={}", name);
         return ERR_INVALID_NAME;
     }
     if (name.find('\0') != std::string::npos) {
+        LOG_ERROR(Service_SM, "A non null terminated service was passed");
         return ERR_INVALID_NAME;
     }
     return RESULT_SUCCESS;
 }
 
-void ServiceManager::InstallInterfaces(std::shared_ptr<ServiceManager> self) {
+void ServiceManager::InstallInterfaces(std::shared_ptr<ServiceManager> self,
+                                       Kernel::KernelCore& kernel) {
     ASSERT(self->sm_interface.expired());
 
-    auto sm = std::make_shared<SM>(self);
+    auto sm = std::make_shared<SM>(self, kernel);
     sm->InstallAsNamedPort();
     self->sm_interface = sm;
     self->controller_interface = std::make_unique<Controller>();
 }
 
-ResultVal<Kernel::SharedPtr<Kernel::ServerPort>> ServiceManager::RegisterService(
+ResultVal<std::shared_ptr<Kernel::ServerPort>> ServiceManager::RegisterService(
     std::string name, unsigned int max_sessions) {
 
     CASCADE_CODE(ValidateServiceName(name));
 
-    if (registered_services.find(name) != registered_services.end())
+    if (registered_services.find(name) != registered_services.end()) {
+        LOG_ERROR(Service_SM, "Service is already registered! service={}", name);
         return ERR_ALREADY_REGISTERED;
+    }
 
     auto& kernel = Core::System::GetInstance().Kernel();
     auto [server_port, client_port] =
@@ -65,26 +70,28 @@ ResultCode ServiceManager::UnregisterService(const std::string& name) {
     CASCADE_CODE(ValidateServiceName(name));
 
     const auto iter = registered_services.find(name);
-    if (iter == registered_services.end())
+    if (iter == registered_services.end()) {
+        LOG_ERROR(Service_SM, "Server is not registered! service={}", name);
         return ERR_SERVICE_NOT_REGISTERED;
-
+    }
     registered_services.erase(iter);
     return RESULT_SUCCESS;
 }
 
-ResultVal<Kernel::SharedPtr<Kernel::ClientPort>> ServiceManager::GetServicePort(
+ResultVal<std::shared_ptr<Kernel::ClientPort>> ServiceManager::GetServicePort(
     const std::string& name) {
 
     CASCADE_CODE(ValidateServiceName(name));
     auto it = registered_services.find(name);
     if (it == registered_services.end()) {
+        LOG_ERROR(Service_SM, "Server is not registered! service={}", name);
         return ERR_SERVICE_NOT_REGISTERED;
     }
 
     return MakeResult(it->second);
 }
 
-ResultVal<Kernel::SharedPtr<Kernel::ClientSession>> ServiceManager::ConnectToService(
+ResultVal<std::shared_ptr<Kernel::ClientSession>> ServiceManager::ConnectToService(
     const std::string& name) {
 
     CASCADE_RESULT(auto client_port, GetServicePort(name));
@@ -114,8 +121,6 @@ void SM::GetService(Kernel::HLERequestContext& ctx) {
 
     std::string name(name_buf.begin(), end);
 
-    // TODO(yuriks): Permission checks go here
-
     auto client_port = service_manager->GetServicePort(name);
     if (client_port.Failed()) {
         IPC::ResponseBuilder rb{ctx, 2};
@@ -127,14 +132,22 @@ void SM::GetService(Kernel::HLERequestContext& ctx) {
         return;
     }
 
-    auto session = client_port.Unwrap()->Connect();
-    ASSERT(session.Succeeded());
-    if (session.Succeeded()) {
-        LOG_DEBUG(Service_SM, "called service={} -> session={}", name, (*session)->GetObjectId());
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1, IPC::ResponseBuilder::Flags::AlwaysMoveHandles};
-        rb.Push(session.Code());
-        rb.PushMoveObjects(std::move(session).Unwrap());
+    auto [client, server] = Kernel::Session::Create(kernel, name);
+
+    const auto& server_port = client_port.Unwrap()->GetServerPort();
+    if (server_port->GetHLEHandler()) {
+        server_port->GetHLEHandler()->ClientConnected(server);
+    } else {
+        server_port->AppendPendingSession(server);
     }
+
+    // Wake the threads waiting on the ServerPort
+    server_port->WakeupAllWaitingThreads();
+
+    LOG_DEBUG(Service_SM, "called service={} -> session={}", name, client->GetObjectId());
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1, IPC::ResponseBuilder::Flags::AlwaysMoveHandles};
+    rb.Push(RESULT_SUCCESS);
+    rb.PushMoveObjects(std::move(client));
 }
 
 void SM::RegisterService(Kernel::HLERequestContext& ctx) {
@@ -178,8 +191,8 @@ void SM::UnregisterService(Kernel::HLERequestContext& ctx) {
     rb.Push(service_manager->UnregisterService(name));
 }
 
-SM::SM(std::shared_ptr<ServiceManager> service_manager)
-    : ServiceFramework("sm:", 4), service_manager(std::move(service_manager)) {
+SM::SM(std::shared_ptr<ServiceManager> service_manager, Kernel::KernelCore& kernel)
+    : ServiceFramework{"sm:", 4}, service_manager{std::move(service_manager)}, kernel{kernel} {
     static const FunctionInfo functions[] = {
         {0x00000000, &SM::Initialize, "Initialize"},
         {0x00000001, &SM::GetService, "GetService"},

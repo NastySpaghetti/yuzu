@@ -36,6 +36,13 @@ void MaxwellDMA::CallMethod(const GPU::MethodCall& method_call) {
 #undef MAXWELLDMA_REG_INDEX
 }
 
+void MaxwellDMA::CallMultiMethod(u32 method, const u32* base_start, u32 amount,
+                                 u32 methods_pending) {
+    for (std::size_t i = 0; i < amount; i++) {
+        CallMethod({method, base_start[i], 0, methods_pending - static_cast<u32>(i)});
+    }
+}
+
 void MaxwellDMA::HandleCopy() {
     LOG_TRACE(HW_GPU, "Requested a DMA copy");
 
@@ -57,7 +64,7 @@ void MaxwellDMA::HandleCopy() {
     }
 
     // All copies here update the main memory, so mark all rasterizer states as invalid.
-    system.GPU().Maxwell3D().dirty.OnMemoryWrite();
+    system.GPU().Maxwell3D().OnMemoryWrite();
 
     if (regs.exec.is_dst_linear && regs.exec.is_src_linear) {
         // When the enable_2d bit is disabled, the copy is performed as if we were copying a 1D
@@ -104,8 +111,13 @@ void MaxwellDMA::HandleCopy() {
             write_buffer.resize(dst_size);
         }
 
-        memory_manager.ReadBlock(source, read_buffer.data(), src_size);
-        memory_manager.ReadBlock(dest, write_buffer.data(), dst_size);
+        if (Settings::IsGPULevelExtreme()) {
+            memory_manager.ReadBlock(source, read_buffer.data(), src_size);
+            memory_manager.ReadBlock(dest, write_buffer.data(), dst_size);
+        } else {
+            memory_manager.ReadBlockUnsafe(source, read_buffer.data(), src_size);
+            memory_manager.ReadBlockUnsafe(dest, write_buffer.data(), dst_size);
+        }
 
         Texture::UnswizzleSubrect(
             regs.x_count, regs.y_count, regs.dst_pitch, regs.src_params.size_x, bytes_per_pixel,
@@ -136,7 +148,7 @@ void MaxwellDMA::HandleCopy() {
             write_buffer.resize(dst_size);
         }
 
-        if (Settings::values.use_accurate_gpu_emulation) {
+        if (Settings::IsGPULevelExtreme()) {
             memory_manager.ReadBlock(source, read_buffer.data(), src_size);
             memory_manager.ReadBlock(dest, write_buffer.data(), dst_size);
         } else {

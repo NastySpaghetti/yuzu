@@ -7,8 +7,8 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <vector>
 
-#include <map>
 #include "common/common_types.h"
 #include "core/file_sys/vfs_types.h"
 #include "core/hle/kernel/object.h"
@@ -25,6 +25,7 @@ class VfsFilesystem;
 } // namespace FileSys
 
 namespace Kernel {
+class GlobalScheduler;
 class KernelCore;
 class Process;
 class Scheduler;
@@ -35,9 +36,10 @@ class AppLoader;
 enum class ResultStatus : u16;
 } // namespace Loader
 
-namespace Memory {
+namespace Core::Memory {
 struct CheatEntry;
-} // namespace Memory
+class Memory;
+} // namespace Core::Memory
 
 namespace Service {
 
@@ -57,6 +59,10 @@ class FileSystemController;
 namespace Glue {
 class ARPManager;
 }
+
+namespace LM {
+class Manager;
+} // namespace LM
 
 namespace SM {
 class ServiceManager;
@@ -84,7 +90,8 @@ class InterruptManager;
 namespace Core {
 
 class ARM_Interface;
-class Cpu;
+class CoreManager;
+class DeviceMemory;
 class ExclusiveMonitor;
 class FrameLimiter;
 class PerfStats;
@@ -98,6 +105,8 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
 
 class System {
 public:
+    using CurrentBuildProcessID = std::array<u8, 0x20>;
+
     System(const System&) = delete;
     System& operator=(const System&) = delete;
 
@@ -179,6 +188,9 @@ public:
     /// Prepare the core emulation for a reschedule
     void PrepareReschedule();
 
+    /// Prepare the core emulation for a reschedule
+    void PrepareReschedule(u32 core_index);
+
     /// Gets and resets core performance statistics
     PerfStatsResults GetAndResetPerfStats();
 
@@ -204,16 +216,22 @@ public:
     const ARM_Interface& ArmInterface(std::size_t core_index) const;
 
     /// Gets a CPU interface to the CPU core with the specified index
-    Cpu& CpuCore(std::size_t core_index);
+    CoreManager& GetCoreManager(std::size_t core_index);
 
     /// Gets a CPU interface to the CPU core with the specified index
-    const Cpu& CpuCore(std::size_t core_index) const;
+    const CoreManager& GetCoreManager(std::size_t core_index) const;
 
     /// Gets a reference to the exclusive monitor
     ExclusiveMonitor& Monitor();
 
     /// Gets a constant reference to the exclusive monitor
     const ExclusiveMonitor& Monitor() const;
+
+    /// Gets a mutable reference to the system memory instance.
+    Core::Memory::Memory& Memory();
+
+    /// Gets a constant reference to the system memory instance.
+    const Core::Memory::Memory& Memory() const;
 
     /// Gets a mutable reference to the GPU interface
     Tegra::GPU& GPU();
@@ -232,6 +250,18 @@ public:
 
     /// Gets the scheduler for the CPU core with the specified index
     const Kernel::Scheduler& Scheduler(std::size_t core_index) const;
+
+    /// Gets the global scheduler
+    Kernel::GlobalScheduler& GlobalScheduler();
+
+    /// Gets the global scheduler
+    const Kernel::GlobalScheduler& GlobalScheduler() const;
+
+    /// Gets the manager for the guest device memory
+    Core::DeviceMemory& DeviceMemory();
+
+    /// Gets the manager for the guest device memory
+    const Core::DeviceMemory& DeviceMemory() const;
 
     /// Provides a pointer to the current process
     Kernel::Process* CurrentProcess();
@@ -281,10 +311,6 @@ public:
     Service::SM::ServiceManager& ServiceManager();
     const Service::SM::ServiceManager& ServiceManager() const;
 
-    void SetGPUDebugContext(std::shared_ptr<Tegra::DebugContext> context);
-
-    Tegra::DebugContext* GetGPUDebugContext() const;
-
     void SetFilesystem(std::shared_ptr<FileSys::VfsFilesystem> vfs);
 
     std::shared_ptr<FileSys::VfsFilesystem> GetFilesystem() const;
@@ -326,22 +352,32 @@ public:
 
     const Service::APM::Controller& GetAPMController() const;
 
+    Service::LM::Manager& GetLogManager();
+
+    const Service::LM::Manager& GetLogManager() const;
+
     void SetExitLock(bool locked);
 
     bool GetExitLock() const;
 
-    void SetCurrentProcessBuildID(std::array<u8, 0x20> id);
+    void SetCurrentProcessBuildID(const CurrentBuildProcessID& id);
 
-    const std::array<u8, 0x20>& GetCurrentProcessBuildID() const;
+    const CurrentBuildProcessID& GetCurrentProcessBuildID() const;
+
+    /// Register a host thread as an emulated CPU Core.
+    void RegisterCoreThread(std::size_t id);
+
+    /// Register a host thread as an auxiliary thread.
+    void RegisterHostThread();
 
 private:
     System();
 
     /// Returns the currently running CPU core
-    Cpu& CurrentCpuCore();
+    CoreManager& CurrentCoreManager();
 
     /// Returns the currently running CPU core
-    const Cpu& CurrentCpuCore() const;
+    const CoreManager& CurrentCoreManager() const;
 
     /**
      * Initialize the emulated system.
@@ -356,9 +392,5 @@ private:
 
     static System s_instance;
 };
-
-inline Kernel::Process* CurrentProcess() {
-    return System::GetInstance().CurrentProcess();
-}
 
 } // namespace Core

@@ -18,6 +18,7 @@
 #include "core/hle/service/bcat/backend/boxcat.h"
 #include "core/settings.h"
 
+namespace Service::BCAT {
 namespace {
 
 // Prevents conflicts with windows macro called CreateFile
@@ -29,10 +30,6 @@ FileSys::VirtualFile VfsCreateFileWrap(FileSys::VirtualDir dir, std::string_view
 bool VfsDeleteFileWrap(FileSys::VirtualDir dir, std::string_view name) {
     return dir->DeleteFile(name);
 }
-
-} // Anonymous namespace
-
-namespace Service::BCAT {
 
 constexpr ResultCode ERROR_GENERAL_BCAT_FAILURE{ErrorModule::BCAT, 1};
 
@@ -88,9 +85,7 @@ std::ostream& operator<<(std::ostream& os, DownloadResult result) {
 
 constexpr u32 PORT = 443;
 constexpr u32 TIMEOUT_SECONDS = 30;
-constexpr u64 VFS_COPY_BLOCK_SIZE = 1ull << 24; // 4MB
-
-namespace {
+[[maybe_unused]] constexpr u64 VFS_COPY_BLOCK_SIZE = 1ULL << 24; // 4MB
 
 std::string GetBINFilePath(u64 title_id) {
     return fmt::format("{}bcat/{:016X}/launchparam.bin",
@@ -104,16 +99,17 @@ std::string GetZIPFilePath(u64 title_id) {
 
 // If the error is something the user should know about (build ID mismatch, bad client version),
 // display an error.
-void HandleDownloadDisplayResult(DownloadResult res) {
+void HandleDownloadDisplayResult(const AM::Applets::AppletManager& applet_manager,
+                                 DownloadResult res) {
     if (res == DownloadResult::Success || res == DownloadResult::NoResponse ||
         res == DownloadResult::GeneralWebError || res == DownloadResult::GeneralFSError ||
         res == DownloadResult::NoMatchTitleId || res == DownloadResult::InvalidContentType) {
         return;
     }
 
-    const auto& frontend{Core::System::GetInstance().GetAppletManager().GetAppletFrontendSet()};
+    const auto& frontend{applet_manager.GetAppletFrontendSet()};
     frontend.error->ShowCustomErrorText(
-        ResultCode(-1), "There was an error while attempting to use Boxcat.",
+        RESULT_UNKNOWN, "There was an error while attempting to use Boxcat.",
         DOWNLOAD_RESULT_LOG_MESSAGES[static_cast<std::size_t>(res)], [] {});
 }
 
@@ -199,7 +195,8 @@ private:
     DownloadResult DownloadInternal(const std::string& resolved_path, u32 timeout_seconds,
                                     const std::string& content_type_name) {
         if (client == nullptr) {
-            client = std::make_unique<httplib::SSLClient>(BOXCAT_HOSTNAME, PORT, timeout_seconds);
+            client = std::make_unique<httplib::SSLClient>(BOXCAT_HOSTNAME, PORT);
+            client->set_timeout_sec(timeout_seconds);
         }
 
         httplib::Headers headers{
@@ -254,7 +251,7 @@ private:
     using Digest = std::array<u8, 0x20>;
     static Digest DigestFile(std::vector<u8> bytes) {
         Digest out{};
-        mbedtls_sha256(bytes.data(), bytes.size(), out.data(), 0);
+        mbedtls_sha256_ret(bytes.data(), bytes.size(), out.data(), 0);
         return out;
     }
 
@@ -264,12 +261,13 @@ private:
     u64 build_id;
 };
 
-Boxcat::Boxcat(DirectoryGetter getter) : Backend(std::move(getter)) {}
+Boxcat::Boxcat(AM::Applets::AppletManager& applet_manager_, DirectoryGetter getter)
+    : Backend(std::move(getter)), applet_manager{applet_manager_} {}
 
 Boxcat::~Boxcat() = default;
 
-void SynchronizeInternal(DirectoryGetter dir_getter, TitleIDVersion title,
-                         ProgressServiceBackend& progress,
+void SynchronizeInternal(AM::Applets::AppletManager& applet_manager, DirectoryGetter dir_getter,
+                         TitleIDVersion title, ProgressServiceBackend& progress,
                          std::optional<std::string> dir_name = {}) {
     progress.SetNeedHLELock(true);
 
@@ -295,7 +293,7 @@ void SynchronizeInternal(DirectoryGetter dir_getter, TitleIDVersion title,
             FileUtil::Delete(zip_path);
         }
 
-        HandleDownloadDisplayResult(res);
+        HandleDownloadDisplayResult(applet_manager, res);
         progress.FinishDownload(ERROR_GENERAL_BCAT_FAILURE);
         return;
     }
@@ -364,17 +362,24 @@ void SynchronizeInternal(DirectoryGetter dir_getter, TitleIDVersion title,
 
 bool Boxcat::Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) {
     is_syncing.exchange(true);
-    std::thread([this, title, &progress] { SynchronizeInternal(dir_getter, title, progress); })
+
+    std::thread([this, title, &progress] {
+        SynchronizeInternal(applet_manager, dir_getter, title, progress);
+    })
         .detach();
+
     return true;
 }
 
 bool Boxcat::SynchronizeDirectory(TitleIDVersion title, std::string name,
                                   ProgressServiceBackend& progress) {
     is_syncing.exchange(true);
-    std::thread(
-        [this, title, name, &progress] { SynchronizeInternal(dir_getter, title, progress, name); })
+
+    std::thread([this, title, name, &progress] {
+        SynchronizeInternal(applet_manager, dir_getter, title, progress, name);
+    })
         .detach();
+
     return true;
 }
 
@@ -420,7 +425,7 @@ std::optional<std::vector<u8>> Boxcat::GetLaunchParameter(TitleIDVersion title) 
                 FileUtil::Delete(path);
             }
 
-            HandleDownloadDisplayResult(res);
+            HandleDownloadDisplayResult(applet_manager, res);
             return std::nullopt;
         }
     }
@@ -439,8 +444,8 @@ std::optional<std::vector<u8>> Boxcat::GetLaunchParameter(TitleIDVersion title) 
 
 Boxcat::StatusResult Boxcat::GetStatus(std::optional<std::string>& global,
                                        std::map<std::string, EventStatus>& games) {
-    httplib::SSLClient client{BOXCAT_HOSTNAME, static_cast<int>(PORT),
-                              static_cast<int>(TIMEOUT_SECONDS)};
+    httplib::SSLClient client{BOXCAT_HOSTNAME, static_cast<int>(PORT)};
+    client.set_timeout_sec(static_cast<int>(TIMEOUT_SECONDS));
 
     httplib::Headers headers{
         {std::string("Game-Assets-API-Version"), std::string(BOXCAT_API_VERSION)},
@@ -495,7 +500,8 @@ Boxcat::StatusResult Boxcat::GetStatus(std::optional<std::string>& global,
         }
 
         return StatusResult::Success;
-    } catch (const nlohmann::json::parse_error& e) {
+    } catch (const nlohmann::json::parse_error& error) {
+        LOG_ERROR(Service_BCAT, "{}", error.what());
         return StatusResult::ParseError;
     }
 }

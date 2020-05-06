@@ -20,7 +20,7 @@
 
 namespace Service::HID {
 constexpr s32 HID_JOYSTICK_MAX = 0x7fff;
-constexpr s32 HID_JOYSTICK_MIN = -0x7fff;
+[[maybe_unused]] constexpr s32 HID_JOYSTICK_MIN = -0x7fff;
 constexpr std::size_t NPAD_OFFSET = 0x9A00;
 constexpr u32 BATTERY_FULL = 2;
 constexpr u32 MAX_NPAD_ID = 7;
@@ -105,6 +105,9 @@ void Controller_NPad::InitNewlyAddedControler(std::size_t controller_idx) {
     controller.joy_styles.raw = 0; // Zero out
     controller.device_type.raw = 0;
     switch (controller_type) {
+    case NPadControllerType::None:
+        UNREACHABLE();
+        break;
     case NPadControllerType::Handheld:
         controller.joy_styles.handheld.Assign(1);
         controller.device_type.handheld.Assign(1);
@@ -172,7 +175,7 @@ void Controller_NPad::OnInit() {
     auto& kernel = system.Kernel();
     for (std::size_t i = 0; i < styleset_changed_events.size(); i++) {
         styleset_changed_events[i] = Kernel::WritableEvent::CreateEventPair(
-            kernel, Kernel::ResetType::Manual, fmt::format("npad:NpadStyleSetChanged_{}", i));
+            kernel, fmt::format("npad:NpadStyleSetChanged_{}", i));
     }
 
     if (!IsControllerActivated()) {
@@ -239,7 +242,7 @@ void Controller_NPad::OnRelease() {}
 
 void Controller_NPad::RequestPadStateUpdate(u32 npad_id) {
     const auto controller_idx = NPadIdToIndex(npad_id);
-    const auto controller_type = connected_controllers[controller_idx].type;
+    [[maybe_unused]] const auto controller_type = connected_controllers[controller_idx].type;
     if (!connected_controllers[controller_idx].is_connected) {
         return;
     }
@@ -248,6 +251,10 @@ void Controller_NPad::RequestPadStateUpdate(u32 npad_id) {
     auto& rstick_entry = npad_pad_states[controller_idx].r_stick;
     const auto& button_state = buttons[controller_idx];
     const auto& analog_state = sticks[controller_idx];
+    const auto [stick_l_x_f, stick_l_y_f] =
+        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Left)]->GetStatus();
+    const auto [stick_r_x_f, stick_r_y_f] =
+        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Right)]->GetStatus();
 
     using namespace Settings::NativeButton;
     pad_state.a.Assign(button_state[A - BUTTON_HID_BEGIN]->GetStatus());
@@ -268,23 +275,32 @@ void Controller_NPad::RequestPadStateUpdate(u32 npad_id) {
     pad_state.d_right.Assign(button_state[DRight - BUTTON_HID_BEGIN]->GetStatus());
     pad_state.d_down.Assign(button_state[DDown - BUTTON_HID_BEGIN]->GetStatus());
 
-    pad_state.l_stick_left.Assign(button_state[LStick_Left - BUTTON_HID_BEGIN]->GetStatus());
-    pad_state.l_stick_up.Assign(button_state[LStick_Up - BUTTON_HID_BEGIN]->GetStatus());
-    pad_state.l_stick_right.Assign(button_state[LStick_Right - BUTTON_HID_BEGIN]->GetStatus());
-    pad_state.l_stick_down.Assign(button_state[LStick_Down - BUTTON_HID_BEGIN]->GetStatus());
+    pad_state.l_stick_right.Assign(
+        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Left)]->GetAnalogDirectionStatus(
+            Input::AnalogDirection::RIGHT));
+    pad_state.l_stick_left.Assign(
+        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Left)]->GetAnalogDirectionStatus(
+            Input::AnalogDirection::LEFT));
+    pad_state.l_stick_up.Assign(
+        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Left)]->GetAnalogDirectionStatus(
+            Input::AnalogDirection::UP));
+    pad_state.l_stick_down.Assign(
+        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Left)]->GetAnalogDirectionStatus(
+            Input::AnalogDirection::DOWN));
 
-    pad_state.r_stick_left.Assign(button_state[RStick_Left - BUTTON_HID_BEGIN]->GetStatus());
-    pad_state.r_stick_up.Assign(button_state[RStick_Up - BUTTON_HID_BEGIN]->GetStatus());
-    pad_state.r_stick_right.Assign(button_state[RStick_Right - BUTTON_HID_BEGIN]->GetStatus());
-    pad_state.r_stick_down.Assign(button_state[RStick_Down - BUTTON_HID_BEGIN]->GetStatus());
+    pad_state.r_stick_right.Assign(
+        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Right)]
+            ->GetAnalogDirectionStatus(Input::AnalogDirection::RIGHT));
+    pad_state.r_stick_left.Assign(analog_state[static_cast<std::size_t>(JoystickId::Joystick_Right)]
+                                      ->GetAnalogDirectionStatus(Input::AnalogDirection::LEFT));
+    pad_state.r_stick_up.Assign(analog_state[static_cast<std::size_t>(JoystickId::Joystick_Right)]
+                                    ->GetAnalogDirectionStatus(Input::AnalogDirection::UP));
+    pad_state.r_stick_down.Assign(analog_state[static_cast<std::size_t>(JoystickId::Joystick_Right)]
+                                      ->GetAnalogDirectionStatus(Input::AnalogDirection::DOWN));
 
     pad_state.left_sl.Assign(button_state[SL - BUTTON_HID_BEGIN]->GetStatus());
     pad_state.left_sr.Assign(button_state[SR - BUTTON_HID_BEGIN]->GetStatus());
 
-    const auto [stick_l_x_f, stick_l_y_f] =
-        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Left)]->GetStatus();
-    const auto [stick_r_x_f, stick_r_y_f] =
-        analog_state[static_cast<std::size_t>(JoystickId::Joystick_Right)]->GetStatus();
     lstick_entry.x = static_cast<s32>(stick_l_x_f * HID_JOYSTICK_MAX);
     lstick_entry.y = static_cast<s32>(stick_l_y_f * HID_JOYSTICK_MAX);
     rstick_entry.x = static_cast<s32>(stick_r_x_f * HID_JOYSTICK_MAX);
@@ -346,6 +362,9 @@ void Controller_NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing, u8* 
         libnx_entry.connection_status.raw = 0;
 
         switch (controller_type) {
+        case NPadControllerType::None:
+            UNREACHABLE();
+            break;
         case NPadControllerType::Handheld:
             handheld_entry.connection_status.raw = 0;
             handheld_entry.connection_status.IsWired.Assign(1);
@@ -483,7 +502,7 @@ void Controller_NPad::SetNpadMode(u32 npad_id, NPadAssignments assignment_mode) 
 
 void Controller_NPad::VibrateController(const std::vector<u32>& controller_ids,
                                         const std::vector<Vibration>& vibrations) {
-    LOG_WARNING(Service_HID, "(STUBBED) called");
+    LOG_DEBUG(Service_HID, "(STUBBED) called");
 
     if (!can_controllers_vibrate) {
         return;
@@ -497,8 +516,7 @@ void Controller_NPad::VibrateController(const std::vector<u32>& controller_ids,
     last_processed_vibration = vibrations.back();
 }
 
-Kernel::SharedPtr<Kernel::ReadableEvent> Controller_NPad::GetStyleSetChangedEvent(
-    u32 npad_id) const {
+std::shared_ptr<Kernel::ReadableEvent> Controller_NPad::GetStyleSetChangedEvent(u32 npad_id) const {
     // TODO(ogniK): Figure out the best time to signal this event. This event seems that it should
     // be signalled at least once, and signaled after a new controller is connected?
     const auto& styleset_event = styleset_changed_events[NPadIdToIndex(npad_id)];
@@ -579,36 +597,6 @@ bool Controller_NPad::SwapNpadAssignment(u32 npad_id_1, u32 npad_id_2) {
     return true;
 }
 
-bool Controller_NPad::IsControllerSupported(NPadControllerType controller) {
-    if (controller == NPadControllerType::Handheld) {
-        // Handheld is not even a supported type, lets stop here
-        if (std::find(supported_npad_id_types.begin(), supported_npad_id_types.end(),
-                      NPAD_HANDHELD) == supported_npad_id_types.end()) {
-            return false;
-        }
-        // Handheld should not be supported in docked mode
-        if (Settings::values.use_docked_mode) {
-            return false;
-        }
-    }
-    switch (controller) {
-    case NPadControllerType::ProController:
-        return style.pro_controller;
-    case NPadControllerType::Handheld:
-        return style.handheld;
-    case NPadControllerType::JoyDual:
-        return style.joycon_dual;
-    case NPadControllerType::JoyLeft:
-        return style.joycon_left;
-    case NPadControllerType::JoyRight:
-        return style.joycon_right;
-    case NPadControllerType::Pokeball:
-        return style.pokeball;
-    default:
-        return false;
-    }
-}
-
 Controller_NPad::LedPattern Controller_NPad::GetLedPattern(u32 npad_id) {
     if (npad_id == npad_id_list.back() || npad_id == npad_id_list[npad_id_list.size() - 2]) {
         // These are controllers without led patterns
@@ -655,25 +643,24 @@ void Controller_NPad::ClearAllConnectedControllers() {
 }
 
 void Controller_NPad::DisconnectAllConnectedControllers() {
-    std::for_each(connected_controllers.begin(), connected_controllers.end(),
-                  [](ControllerHolder& controller) { controller.is_connected = false; });
+    for (ControllerHolder& controller : connected_controllers) {
+        controller.is_connected = false;
+    }
 }
 
 void Controller_NPad::ConnectAllDisconnectedControllers() {
-    std::for_each(connected_controllers.begin(), connected_controllers.end(),
-                  [](ControllerHolder& controller) {
-                      if (controller.type != NPadControllerType::None && !controller.is_connected) {
-                          controller.is_connected = false;
-                      }
-                  });
+    for (ControllerHolder& controller : connected_controllers) {
+        if (controller.type != NPadControllerType::None && !controller.is_connected) {
+            controller.is_connected = true;
+        }
+    }
 }
 
 void Controller_NPad::ClearAllControllers() {
-    std::for_each(connected_controllers.begin(), connected_controllers.end(),
-                  [](ControllerHolder& controller) {
-                      controller.type = NPadControllerType::None;
-                      controller.is_connected = false;
-                  });
+    for (ControllerHolder& controller : connected_controllers) {
+        controller.type = NPadControllerType::None;
+        controller.is_connected = false;
+    }
 }
 
 u32 Controller_NPad::GetAndResetPressState() {
@@ -681,10 +668,10 @@ u32 Controller_NPad::GetAndResetPressState() {
 }
 
 bool Controller_NPad::IsControllerSupported(NPadControllerType controller) const {
-    const bool support_handheld =
-        std::find(supported_npad_id_types.begin(), supported_npad_id_types.end(), NPAD_HANDHELD) !=
-        supported_npad_id_types.end();
     if (controller == NPadControllerType::Handheld) {
+        const bool support_handheld =
+            std::find(supported_npad_id_types.begin(), supported_npad_id_types.end(),
+                      NPAD_HANDHELD) != supported_npad_id_types.end();
         // Handheld is not even a supported type, lets stop here
         if (!support_handheld) {
             return false;
@@ -696,6 +683,7 @@ bool Controller_NPad::IsControllerSupported(NPadControllerType controller) const
 
         return true;
     }
+
     if (std::any_of(supported_npad_id_types.begin(), supported_npad_id_types.end(),
                     [](u32 npad_id) { return npad_id <= MAX_NPAD_ID; })) {
         switch (controller) {
@@ -713,6 +701,7 @@ bool Controller_NPad::IsControllerSupported(NPadControllerType controller) const
             return false;
         }
     }
+
     return false;
 }
 
@@ -791,6 +780,7 @@ Controller_NPad::NPadControllerType Controller_NPad::DecideBestController(
         priority_list.push_back(NPadControllerType::JoyLeft);
         priority_list.push_back(NPadControllerType::JoyRight);
         priority_list.push_back(NPadControllerType::JoyDual);
+        break;
     }
 
     const auto iter = std::find_if(priority_list.begin(), priority_list.end(),

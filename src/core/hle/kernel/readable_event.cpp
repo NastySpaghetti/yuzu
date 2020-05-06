@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "core/hle/kernel/errors.h"
 #include "core/hle/kernel/object.h"
 #include "core/hle/kernel/readable_event.h"
@@ -11,32 +12,34 @@
 
 namespace Kernel {
 
-ReadableEvent::ReadableEvent(KernelCore& kernel) : WaitObject{kernel} {}
+ReadableEvent::ReadableEvent(KernelCore& kernel) : SynchronizationObject{kernel} {}
 ReadableEvent::~ReadableEvent() = default;
 
 bool ReadableEvent::ShouldWait(const Thread* thread) const {
-    return !signaled;
+    return !is_signaled;
 }
 
 void ReadableEvent::Acquire(Thread* thread) {
-    ASSERT_MSG(!ShouldWait(thread), "object unavailable!");
-
-    if (reset_type == ResetType::Automatic) {
-        signaled = false;
-    }
+    ASSERT_MSG(IsSignaled(), "object unavailable!");
 }
 
 void ReadableEvent::Signal() {
-    signaled = true;
-    WakeupAllWaitingThreads();
+    if (is_signaled) {
+        return;
+    }
+
+    is_signaled = true;
+    SynchronizationObject::Signal();
 }
 
 void ReadableEvent::Clear() {
-    signaled = false;
+    is_signaled = false;
 }
 
 ResultCode ReadableEvent::Reset() {
-    if (!signaled) {
+    if (!is_signaled) {
+        LOG_ERROR(Kernel, "Handle is not signaled! object_id={}, object_type={}, object_name={}",
+                  GetObjectId(), GetTypeName(), GetName());
         return ERR_INVALID_STATE;
     }
 

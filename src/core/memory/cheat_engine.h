@@ -5,6 +5,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <vector>
 #include "common/common_types.h"
 #include "core/memory/dmnt_cheat_types.h"
@@ -19,11 +20,11 @@ class CoreTiming;
 struct EventType;
 } // namespace Core::Timing
 
-namespace Memory {
+namespace Core::Memory {
 
 class StandardVmCallbacks : public DmntCheatVm::Callbacks {
 public:
-    StandardVmCallbacks(const Core::System& system, const CheatProcessMetadata& metadata);
+    StandardVmCallbacks(Core::System& system, const CheatProcessMetadata& metadata);
     ~StandardVmCallbacks() override;
 
     void MemoryRead(VAddr address, void* data, u64 size) override;
@@ -36,7 +37,7 @@ private:
     VAddr SanitizeAddress(VAddr address) const;
 
     const CheatProcessMetadata& metadata;
-    const Core::System& system;
+    Core::System& system;
 };
 
 // Intermediary class that parses a text file or other disk format for storing cheats into a
@@ -78,9 +79,9 @@ private:
     std::vector<CheatEntry> cheats;
     std::atomic_bool is_pending_reload{false};
 
-    Core::Timing::EventType* event{};
+    std::shared_ptr<Core::Timing::EventType> event;
     Core::Timing::CoreTiming& core_timing;
     Core::System& system;
 };
 
-} // namespace Memory
+} // namespace Core::Memory

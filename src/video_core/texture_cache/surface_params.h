@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <utility>
+
 #include "common/alignment.h"
 #include "common/bit_util.h"
 #include "common/cityhash.h"
@@ -16,23 +18,22 @@
 
 namespace VideoCommon {
 
-using VideoCore::Surface::SurfaceCompression;
+class FormatLookupTable;
 
 class SurfaceParams {
 public:
     /// Creates SurfaceCachedParams from a texture configuration.
-    static SurfaceParams CreateForTexture(const Tegra::Texture::TICEntry& tic,
+    static SurfaceParams CreateForTexture(const FormatLookupTable& lookup_table,
+                                          const Tegra::Texture::TICEntry& tic,
                                           const VideoCommon::Shader::Sampler& entry);
 
     /// Creates SurfaceCachedParams from an image configuration.
-    static SurfaceParams CreateForImage(const Tegra::Texture::TICEntry& tic,
+    static SurfaceParams CreateForImage(const FormatLookupTable& lookup_table,
+                                        const Tegra::Texture::TICEntry& tic,
                                         const VideoCommon::Shader::Image& entry);
 
     /// Creates SurfaceCachedParams for a depth buffer configuration.
-    static SurfaceParams CreateForDepthBuffer(
-        Core::System& system, u32 zeta_width, u32 zeta_height, Tegra::DepthFormat format,
-        u32 block_width, u32 block_height, u32 block_depth,
-        Tegra::Engines::Maxwell3D::Regs::InvMemoryLayout type);
+    static SurfaceParams CreateForDepthBuffer(Core::System& system);
 
     /// Creates SurfaceCachedParams from a framebuffer configuration.
     static SurfaceParams CreateForFramebuffer(Core::System& system, std::size_t index);
@@ -40,6 +41,14 @@ public:
     /// Creates SurfaceCachedParams from a Fermi2D surface configuration.
     static SurfaceParams CreateForFermiCopySurface(
         const Tegra::Engines::Fermi2D::Regs::Surface& config);
+
+    /// Obtains the texture target from a shader's sampler entry.
+    static VideoCore::Surface::SurfaceTarget ExpectedTarget(
+        const VideoCommon::Shader::Sampler& entry);
+
+    /// Obtains the texture target from a shader's sampler entry.
+    static VideoCore::Surface::SurfaceTarget ExpectedTarget(
+        const VideoCommon::Shader::Image& entry);
 
     std::size_t Hash() const {
         return static_cast<std::size_t>(
@@ -56,16 +65,14 @@ public:
         return GetInnerMemorySize(false, false, false);
     }
 
-    std::size_t GetHostSizeInBytes() const {
-        std::size_t host_size_in_bytes;
-        if (GetCompressionType() == SurfaceCompression::Converted) {
-            // ASTC is uncompressed in software, in emulated as RGBA8
-            host_size_in_bytes = 0;
-            for (u32 level = 0; level < num_levels; ++level) {
-                host_size_in_bytes += GetConvertedMipmapSize(level);
-            }
-        } else {
-            host_size_in_bytes = GetInnerMemorySize(true, false, false);
+    std::size_t GetHostSizeInBytes(bool is_converted) const {
+        if (!is_converted) {
+            return GetInnerMemorySize(true, false, false);
+        }
+        // ASTC is uncompressed in software, in emulated as RGBA8
+        std::size_t host_size_in_bytes = 0;
+        for (u32 level = 0; level < num_levels; ++level) {
+            host_size_in_bytes += GetConvertedMipmapSize(level) * GetNumLayers();
         }
         return host_size_in_bytes;
     }
@@ -96,9 +103,8 @@ public:
     u32 GetMipBlockDepth(u32 level) const;
 
     /// Returns the best possible row/pitch alignment for the surface.
-    u32 GetRowAlignment(u32 level) const {
-        const u32 bpp =
-            GetCompressionType() == SurfaceCompression::Converted ? 4 : GetBytesPerPixel();
+    u32 GetRowAlignment(u32 level, bool is_converted) const {
+        const u32 bpp = is_converted ? 4 : GetBytesPerPixel();
         return 1U << Common::CountTrailingZeroes32(GetMipWidth(level) * bpp);
     }
 
@@ -106,11 +112,7 @@ public:
     std::size_t GetGuestMipmapLevelOffset(u32 level) const;
 
     /// Returns the offset in bytes in host memory (linear) of a given mipmap level.
-    std::size_t GetHostMipmapLevelOffset(u32 level) const;
-
-    /// Returns the offset in bytes in host memory (linear) of a given mipmap level
-    /// for a texture that is converted in host gpu.
-    std::size_t GetConvertedMipmapOffset(u32 level) const;
+    std::size_t GetHostMipmapLevelOffset(u32 level, bool is_converted) const;
 
     /// Returns the size in bytes in guest memory of a given mipmap level.
     std::size_t GetGuestMipmapSize(u32 level) const {
@@ -123,6 +125,15 @@ public:
     }
 
     std::size_t GetConvertedMipmapSize(u32 level) const;
+
+    /// Get this texture Tegra Block size in guest memory layout
+    u32 GetBlockSize() const;
+
+    /// Get X, Y coordinates max sizes of a single block.
+    std::pair<u32, u32> GetBlockXY() const;
+
+    /// Get the offset in x, y, z coordinates from a memory offset
+    std::tuple<u32, u32, u32> GetBlockOffsetXYZ(u32 offset) const;
 
     /// Returns the size of a layer in bytes in guest memory.
     std::size_t GetGuestLayerSize() const {
@@ -176,14 +187,14 @@ public:
                pixel_format < VideoCore::Surface::PixelFormat::MaxDepthStencilFormat;
     }
 
-    /// Returns how the compression should be handled for this texture.
-    SurfaceCompression GetCompressionType() const {
-        return VideoCore::Surface::GetFormatCompressionType(pixel_format);
-    }
-
     /// Returns is the surface is a TextureBuffer type of surface.
     bool IsBuffer() const {
         return target == VideoCore::Surface::SurfaceTarget::TextureBuffer;
+    }
+
+    /// Returns the number of layers in the surface.
+    std::size_t GetNumLayers() const {
+        return is_layered ? depth : 1;
     }
 
     /// Returns the debug name of the texture for use in graphic debuggers.
@@ -248,7 +259,6 @@ public:
     u32 num_levels;
     u32 emulated_levels;
     VideoCore::Surface::PixelFormat pixel_format;
-    VideoCore::Surface::ComponentType component_type;
     VideoCore::Surface::SurfaceType type;
     VideoCore::Surface::SurfaceTarget target;
 
@@ -258,15 +268,12 @@ private:
 
     /// Returns the size of all mipmap levels and aligns as needed.
     std::size_t GetInnerMemorySize(bool as_host_size, bool layer_only, bool uncompressed) const {
-        return GetLayerSize(as_host_size, uncompressed) * (layer_only ? 1U : depth);
+        return GetLayerSize(as_host_size, uncompressed) *
+               (layer_only ? 1U : (is_layered ? depth : 1U));
     }
 
     /// Returns the size of a layer
     std::size_t GetLayerSize(bool as_host_size, bool uncompressed) const;
-
-    std::size_t GetNumLayers() const {
-        return is_layered ? depth : 1;
-    }
 
     /// Returns true if these parameters are from a layered surface.
     bool IsLayered() const;

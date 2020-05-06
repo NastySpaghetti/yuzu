@@ -61,14 +61,15 @@ AOC_U::AOC_U(Core::System& system)
         {7, &AOC_U::PrepareAddOnContent, "PrepareAddOnContent"},
         {8, &AOC_U::GetAddOnContentListChangedEvent, "GetAddOnContentListChangedEvent"},
         {100, nullptr, "CreateEcPurchasedEventManager"},
+        {101, nullptr, "CreatePermanentEcPurchasedEventManager"},
     };
     // clang-format on
 
     RegisterHandlers(functions);
 
     auto& kernel = system.Kernel();
-    aoc_change_event = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Manual,
-                                                              "GetAddOnContentListChanged:Event");
+    aoc_change_event =
+        Kernel::WritableEvent::CreateEventPair(kernel, "GetAddOnContentListChanged:Event");
 }
 
 AOC_U::~AOC_U() = default;
@@ -131,7 +132,7 @@ void AOC_U::ListAddOnContent(Kernel::HLERequestContext& ctx) {
     if (out.size() < offset) {
         IPC::ResponseBuilder rb{ctx, 2};
         // TODO(DarkLordZach): Find the correct error code.
-        rb.Push(ResultCode(-1));
+        rb.Push(RESULT_UNKNOWN);
         return;
     }
 

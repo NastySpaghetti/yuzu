@@ -4,13 +4,18 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
+#include "core/hle/kernel/memory/memory_types.h"
 #include "core/hle/kernel/object.h"
 
 namespace Core {
+struct EmuThreadHandle;
+class ExclusiveMonitor;
 class System;
-}
+} // namespace Core
 
 namespace Core::Timing {
 class CoreTiming;
@@ -19,17 +24,29 @@ struct EventType;
 
 namespace Kernel {
 
+namespace Memory {
+class MemoryManager;
+template <typename T>
+class SlabHeap;
+} // namespace Memory
+
 class AddressArbiter;
 class ClientPort;
+class GlobalScheduler;
 class HandleTable;
+class PhysicalCore;
 class Process;
 class ResourceLimit;
+class Scheduler;
+class SharedMemory;
+class Synchronization;
 class Thread;
+class TimeManager;
 
 /// Represents a single instance of the kernel.
 class KernelCore {
 private:
-    using NamedPortTable = std::unordered_map<std::string, SharedPtr<ClientPort>>;
+    using NamedPortTable = std::unordered_map<std::string, std::shared_ptr<ClientPort>>;
 
 public:
     /// Constructs an instance of the kernel using the given System
@@ -55,13 +72,13 @@ public:
     void Shutdown();
 
     /// Retrieves a shared pointer to the system resource limit instance.
-    SharedPtr<ResourceLimit> GetSystemResourceLimit() const;
+    std::shared_ptr<ResourceLimit> GetSystemResourceLimit() const;
 
     /// Retrieves a shared pointer to a Thread instance within the thread wakeup handle table.
-    SharedPtr<Thread> RetrieveThreadFromWakeupCallbackHandleTable(Handle handle) const;
+    std::shared_ptr<Thread> RetrieveThreadFromGlobalHandleTable(Handle handle) const;
 
     /// Adds the given shared pointer to an internal list of active processes.
-    void AppendNewProcess(SharedPtr<Process> process);
+    void AppendNewProcess(std::shared_ptr<Process> process);
 
     /// Makes the given process the new current process.
     void MakeCurrentProcess(Process* process);
@@ -73,10 +90,49 @@ public:
     const Process* CurrentProcess() const;
 
     /// Retrieves the list of processes.
-    const std::vector<SharedPtr<Process>>& GetProcessList() const;
+    const std::vector<std::shared_ptr<Process>>& GetProcessList() const;
+
+    /// Gets the sole instance of the global scheduler
+    Kernel::GlobalScheduler& GlobalScheduler();
+
+    /// Gets the sole instance of the global scheduler
+    const Kernel::GlobalScheduler& GlobalScheduler() const;
+
+    /// Gets the sole instance of the Scheduler assoviated with cpu core 'id'
+    Kernel::Scheduler& Scheduler(std::size_t id);
+
+    /// Gets the sole instance of the Scheduler assoviated with cpu core 'id'
+    const Kernel::Scheduler& Scheduler(std::size_t id) const;
+
+    /// Gets the an instance of the respective physical CPU core.
+    Kernel::PhysicalCore& PhysicalCore(std::size_t id);
+
+    /// Gets the an instance of the respective physical CPU core.
+    const Kernel::PhysicalCore& PhysicalCore(std::size_t id) const;
+
+    /// Gets the an instance of the Synchronization Interface.
+    Kernel::Synchronization& Synchronization();
+
+    /// Gets the an instance of the Synchronization Interface.
+    const Kernel::Synchronization& Synchronization() const;
+
+    /// Gets the an instance of the TimeManager Interface.
+    Kernel::TimeManager& TimeManager();
+
+    /// Gets the an instance of the TimeManager Interface.
+    const Kernel::TimeManager& TimeManager() const;
+
+    /// Stops execution of 'id' core, in order to reschedule a new thread.
+    void PrepareReschedule(std::size_t id);
+
+    Core::ExclusiveMonitor& GetExclusiveMonitor();
+
+    const Core::ExclusiveMonitor& GetExclusiveMonitor() const;
+
+    void InvalidateAllInstructionCaches();
 
     /// Adds a port to the named port table
-    void AddNamedPort(std::string name, SharedPtr<ClientPort> port);
+    void AddNamedPort(std::string name, std::shared_ptr<ClientPort> port);
 
     /// Finds a port within the named port table with the given name.
     NamedPortTable::iterator FindNamedPort(const std::string& name);
@@ -86,6 +142,54 @@ public:
 
     /// Determines whether or not the given port is a valid named port.
     bool IsValidNamedPort(NamedPortTable::const_iterator port) const;
+
+    /// Gets the current host_thread/guest_thread handle.
+    Core::EmuThreadHandle GetCurrentEmuThreadID() const;
+
+    /// Gets the current host_thread handle.
+    u32 GetCurrentHostThreadID() const;
+
+    /// Register the current thread as a CPU Core Thread.
+    void RegisterCoreThread(std::size_t core_id);
+
+    /// Register the current thread as a non CPU core thread.
+    void RegisterHostThread();
+
+    /// Gets the virtual memory manager for the kernel.
+    Memory::MemoryManager& MemoryManager();
+
+    /// Gets the virtual memory manager for the kernel.
+    const Memory::MemoryManager& MemoryManager() const;
+
+    /// Gets the slab heap allocated for user space pages.
+    Memory::SlabHeap<Memory::Page>& GetUserSlabHeapPages();
+
+    /// Gets the slab heap allocated for user space pages.
+    const Memory::SlabHeap<Memory::Page>& GetUserSlabHeapPages() const;
+
+    /// Gets the shared memory object for HID services.
+    Kernel::SharedMemory& GetHidSharedMem();
+
+    /// Gets the shared memory object for HID services.
+    const Kernel::SharedMemory& GetHidSharedMem() const;
+
+    /// Gets the shared memory object for font services.
+    Kernel::SharedMemory& GetFontSharedMem();
+
+    /// Gets the shared memory object for font services.
+    const Kernel::SharedMemory& GetFontSharedMem() const;
+
+    /// Gets the shared memory object for IRS services.
+    Kernel::SharedMemory& GetIrsSharedMem();
+
+    /// Gets the shared memory object for IRS services.
+    const Kernel::SharedMemory& GetIrsSharedMem() const;
+
+    /// Gets the shared memory object for Time services.
+    Kernel::SharedMemory& GetTimeSharedMem();
+
+    /// Gets the shared memory object for Time services.
+    const Kernel::SharedMemory& GetTimeSharedMem() const;
 
 private:
     friend class Object;
@@ -105,13 +209,13 @@ private:
     u64 CreateNewThreadID();
 
     /// Retrieves the event type used for thread wakeup callbacks.
-    Core::Timing::EventType* ThreadWakeupCallbackEventType() const;
+    const std::shared_ptr<Core::Timing::EventType>& ThreadWakeupCallbackEventType() const;
 
-    /// Provides a reference to the thread wakeup callback handle table.
-    Kernel::HandleTable& ThreadWakeupCallbackHandleTable();
+    /// Provides a reference to the global handle table.
+    Kernel::HandleTable& GlobalHandleTable();
 
-    /// Provides a const reference to the thread wakeup callback handle table.
-    const Kernel::HandleTable& ThreadWakeupCallbackHandleTable() const;
+    /// Provides a const reference to the global handle table.
+    const Kernel::HandleTable& GlobalHandleTable() const;
 
     struct Impl;
     std::unique_ptr<Impl> impl;

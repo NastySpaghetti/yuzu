@@ -172,9 +172,7 @@ void GameList::onTextChanged(const QString& new_text) {
     const int folder_count = tree_view->model()->rowCount();
     QString edit_filter_text = new_text.toLower();
     QStandardItem* folder;
-    QStandardItem* child;
     int children_total = 0;
-    QModelIndex root_index = item_model->invisibleRootItem()->index();
 
     // If the searchfield is empty every item is visible
     // Otherwise the filter gets applied
@@ -272,6 +270,8 @@ void GameList::onUpdateThemedIcons() {
                     .scaled(icon_size, icon_size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation),
                 Qt::DecorationRole);
             break;
+        default:
+            break;
         }
     }
 }
@@ -315,7 +315,7 @@ GameList::GameList(FileSys::VirtualFilesystem vfs, FileSys::ManualContentProvide
         item_model->setHeaderData(COLUMN_FILE_TYPE - 1, Qt::Horizontal, tr("File type"));
         item_model->setHeaderData(COLUMN_SIZE - 1, Qt::Horizontal, tr("Size"));
     }
-    item_model->setSortRole(GameListItemPath::TitleRole);
+    item_model->setSortRole(GameListItemPath::SortRole);
 
     connect(main_window, &GMainWindow::UpdateThemedIcons, this, &GameList::onUpdateThemedIcons);
     connect(tree_view, &QTreeView::activated, this, &GameList::ValidateEntry);
@@ -392,6 +392,8 @@ void GameList::ValidateEntry(const QModelIndex& item) {
     case GameListItemType::AddDir:
         emit AddDirectory();
         break;
+    default:
+        break;
     }
 }
 
@@ -439,6 +441,8 @@ void GameList::DonePopulating(QStringList watch_list) {
     if (children_total > 0) {
         search_field->setFocus();
     }
+    item_model->sort(tree_view->header()->sortIndicatorSection(),
+                     tree_view->header()->sortIndicatorOrder());
 }
 
 void GameList::PopupContextMenu(const QPoint& menu_location) {
@@ -462,6 +466,8 @@ void GameList::PopupContextMenu(const QPoint& menu_location) {
     case GameListItemType::SysNandDir:
         AddPermDirPopup(context_menu, selected);
         break;
+    default:
+        break;
     }
     context_menu.exec(tree_view->viewport()->mapToGlobal(menu_location));
 }
@@ -471,7 +477,6 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, std::string pat
     QAction* open_lfs_location = context_menu.addAction(tr("Open Mod Data Location"));
     QAction* open_transferable_shader_cache =
         context_menu.addAction(tr("Open Transferable Shader Cache"));
-    QAction* open_rescaling_profile_cache = context_menu.addAction(tr("Open Rescaling Profile"));
     context_menu.addSeparator();
     QAction* dump_romfs = context_menu.addAction(tr("Dump RomFS"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
@@ -483,16 +488,14 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, std::string pat
     auto it = FindMatchingCompatibilityEntry(compatibility_list, program_id);
     navigate_to_gamedb_entry->setVisible(it != compatibility_list.end() && program_id != 0);
 
-    connect(open_save_location, &QAction::triggered, [this, program_id]() {
-        emit OpenFolderRequested(program_id, GameListOpenTarget::SaveData);
+    connect(open_save_location, &QAction::triggered, [this, program_id, path]() {
+        emit OpenFolderRequested(GameListOpenTarget::SaveData, path);
     });
-    connect(open_lfs_location, &QAction::triggered, [this, program_id]() {
-        emit OpenFolderRequested(program_id, GameListOpenTarget::ModData);
+    connect(open_lfs_location, &QAction::triggered, [this, program_id, path]() {
+        emit OpenFolderRequested(GameListOpenTarget::ModData, path);
     });
     connect(open_transferable_shader_cache, &QAction::triggered,
             [this, program_id]() { emit OpenTransferableShaderCacheRequested(program_id); });
-    connect(open_rescaling_profile_cache, &QAction::triggered,
-            [this, program_id]() { emit OpenResolutionProfileRequested(program_id); });
     connect(dump_romfs, &QAction::triggered,
             [this, program_id, path]() { emit DumpRomFSRequested(program_id, path); });
     connect(copy_tid, &QAction::triggered,
@@ -665,8 +668,6 @@ void GameList::LoadInterfaceLayout() {
         // so make it as large as possible as default.
         header->resizeSection(COLUMN_NAME, header->width());
     }
-
-    item_model->sort(header->sortIndicatorSection(), header->sortIndicatorOrder());
 }
 
 const QStringList GameList::supported_file_extensions = {
