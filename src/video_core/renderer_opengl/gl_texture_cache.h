@@ -40,8 +40,6 @@ public:
     explicit CachedSurface(GPUVAddr gpu_addr, const SurfaceParams& params, bool is_astc_supported);
     ~CachedSurface();
 
-    void Init();
-
     void UploadTexture(const std::vector<u8>& staging_buffer) override;
     void DownloadTexture(std::vector<u8>& staging_buffer) override;
 
@@ -103,13 +101,8 @@ public:
         return texture_view.handle;
     }
 
-<<<<<<< HEAD
     GLenum GetFormat() const {
         return format;
-=======
-    const CachedSurface& GetParent() const {
-        return surface;
->>>>>>> resolution-rescaling-4
     }
 
     const SurfaceParams& GetSurfaceParams() const {

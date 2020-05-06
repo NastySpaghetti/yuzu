@@ -138,8 +138,6 @@ add_library(video_core STATIC
     shader/transform_feedback.h
     surface.cpp
     surface.h
-    texture_cache/resolution_scaling/database.cpp
-    texture_cache/resolution_scaling/database.h
     texture_cache/format_lookup_table.cpp
     texture_cache/format_lookup_table.h
     texture_cache/surface_base.cpp
@@ -229,8 +227,8 @@ endif()
 create_target_directory_groups(video_core)
 
 target_link_libraries(video_core PUBLIC common core)
-target_link_libraries(video_core PRIVATE glad json-headers)
 target_link_libraries(video_core PRIVATE glad)
+
 if (ENABLE_VULKAN)
     target_include_directories(video_core PRIVATE sirit ../../externals/Vulkan-Headers/include)
     target_compile_definitions(video_core PRIVATE HAS_VULKAN)

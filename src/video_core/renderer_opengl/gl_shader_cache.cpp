@@ -42,12 +42,6 @@ using VideoCommon::Shader::Registry;
 using VideoCommon::Shader::ShaderIR;
 using VideoCommon::Shader::STAGE_MAIN_OFFSET;
 
-struct UnspecializedShader {
-    std::string code;
-    GLShader::ShaderEntries entries;
-    ProgramType program_type;
-};
-
 namespace {
 
 constexpr VideoCommon::Shader::CompilerSettings COMPILER_SETTINGS{};
@@ -132,90 +126,12 @@ std::shared_ptr<OGLProgram> BuildShader(const Device& device, ShaderType shader_
     const std::string shader_id = MakeShaderID(unique_identifier, shader_type);
     LOG_INFO(Render_OpenGL, "{}", shader_id);
 
-    switch (program_type) {
-    case ProgramType::VertexA:
-    case ProgramType::VertexB:
-        return GLShader::GenerateVertexShader(device, setup);
-    case ProgramType::Geometry:
-        return GLShader::GenerateGeometryShader(device, setup);
-    case ProgramType::Fragment:
-        return GLShader::GenerateFragmentShader(device, setup);
-    case ProgramType::Compute:
-        return GLShader::GenerateComputeShader(device, setup);
-    default:
-        UNIMPLEMENTED_MSG("Unimplemented program_type={}", static_cast<u32>(program_type));
-        return {};
-    }
-}
-
-CachedProgram SpecializeShader(const std::string& code, const GLShader::ShaderEntries& entries,
-                               ProgramType program_type, const ProgramVariant& variant,
-                               bool hint_retrievable = false) {
-    auto base_bindings{variant.base_bindings};
-    const auto primitive_mode{variant.primitive_mode};
-    const auto texture_buffer_usage{variant.texture_buffer_usage};
-
-    std::string source = R"(#version 430 core
-#extension GL_ARB_separate_shader_objects : enable
-#extension GL_ARB_shader_viewport_layer_array : enable
-#extension GL_EXT_shader_image_load_formatted : enable
-#extension GL_NV_gpu_shader5 : enable
-#extension GL_NV_shader_thread_group : enable
-#extension GL_NV_shader_thread_shuffle : enable
-)";
-    if (program_type == ProgramType::Compute) {
-        source += "#extension GL_ARB_compute_variable_group_size : require\n";
-    }
-    source += '\n';
-
-    for (const auto& cbuf : entries.const_buffers) {
-        source +=
-            fmt::format("#define CBUF_BINDING_{} {}\n", cbuf.GetIndex(), base_bindings.cbuf++);
-    }
-    for (const auto& gmem : entries.global_memory_entries) {
-        source += fmt::format("#define GMEM_BINDING_{}_{} {}\n", gmem.GetCbufIndex(),
-                              gmem.GetCbufOffset(), base_bindings.gmem++);
-    }
-    for (const auto& sampler : entries.samplers) {
-        source += fmt::format("#define SAMPLER_BINDING_{} {}\n", sampler.GetIndex(),
-                              base_bindings.sampler++);
-    }
-    for (const auto& image : entries.images) {
-        source +=
-            fmt::format("#define IMAGE_BINDING_{} {}\n", image.GetIndex(), base_bindings.image++);
-    }
-
-    // Transform 1D textures to texture samplers by declaring its preprocessor macros.
-    for (std::size_t i = 0; i < texture_buffer_usage.size(); ++i) {
-        if (!texture_buffer_usage.test(i)) {
-            continue;
-        }
-        source += fmt::format("#define SAMPLER_{}_IS_BUFFER\n", i);
-    }
-    if (texture_buffer_usage.any()) {
-        source += '\n';
-    }
-
-    if (program_type == ProgramType::Geometry) {
-        const auto [glsl_topology, debug_name, max_vertices] =
-            GetPrimitiveDescription(primitive_mode);
-
-        source += "layout (" + std::string(glsl_topology) + ") in;\n\n";
-        source += "#define MAX_VERTEX_INPUT " + std::to_string(max_vertices) + '\n';
-    }
-    if (program_type == ProgramType::Compute) {
-        source += "layout (local_size_variable) in;\n";
-    }
-
-    source += '\n';
-    source += code;
-
+    const std::string glsl = DecompileShader(device, ir, registry, shader_type, shader_id);
     OGLShader shader;
     shader.Create(glsl.c_str(), GetGLShaderType(shader_type));
 
-    auto program = std::make_shared<GLShader::StageProgram>();
+    auto program = std::make_shared<OGLProgram>();
     program->Create(true, hint_retrievable, shader.handle);
-    program->SetUniformLocations();
     return program;
 }
 
@@ -282,26 +198,25 @@ Shader CachedShader::CreateStageFromMemory(const ShaderParameters& params,
 Shader CachedShader::CreateKernelFromMemory(const ShaderParameters& params, ProgramCode code) {
     const std::size_t size_in_bytes = code.size() * sizeof(u64);
 
-std::tuple<GLShader::StageProgram&, BaseBindings> CachedShader::GetProgramHandle(
-    const ProgramVariant& variant) {
-    const auto [entry, is_cache_miss] = programs.try_emplace(variant);
-    auto& stage_program = entry->second;
-    if (is_cache_miss) {
-        stage_program = TryLoadProgram(variant);
-        if (!stage_program) {
-            stage_program = SpecializeShader(code, entries, program_type, variant);
-            disk_cache.SaveUsage(GetUsage(variant));
-        }
+    auto& engine = params.system.GPU().KeplerCompute();
+    auto registry = std::make_shared<Registry>(ShaderType::Compute, engine);
+    const ShaderIR ir(code, KERNEL_MAIN_OFFSET, COMPILER_SETTINGS, *registry);
+    const u64 uid = params.unique_identifier;
+    auto program = BuildShader(params.device, ShaderType::Compute, uid, ir, *registry);
 
-        LabelGLObject(GL_PROGRAM, stage_program->handle, cpu_addr);
-    }
+    ShaderDiskCacheEntry entry;
+    entry.type = ShaderType::Compute;
+    entry.code = std::move(code);
+    entry.unique_identifier = uid;
+    entry.bound_buffer = registry->GetBoundBuffer();
+    entry.compute_info = registry->GetComputeInfo();
+    entry.keys = registry->GetKeys();
+    entry.bound_samplers = registry->GetBoundSamplers();
+    entry.bindless_samplers = registry->GetBindlessSamplers();
+    params.disk_cache.SaveEntry(std::move(entry));
 
-    auto base_bindings{variant.base_bindings};
-    base_bindings.cbuf += static_cast<u32>(entries.const_buffers.size());
-    base_bindings.gmem += static_cast<u32>(entries.global_memory_entries.size());
-    base_bindings.sampler += static_cast<u32>(entries.samplers.size());
-
-    return {*stage_program, base_bindings};
+    return std::shared_ptr<CachedShader>(new CachedShader(
+        params.cpu_addr, size_in_bytes, std::move(registry), MakeEntries(ir), std::move(program)));
 }
 
 Shader CachedShader::CreateFromCache(const ShaderParameters& params,
@@ -443,11 +358,12 @@ std::shared_ptr<OGLProgram> ShaderCacheOpenGL::GeneratePrecompiledProgram(
         return {};
     }
 
-    CachedProgram shader = std::make_shared<GLShader::StageProgram>();
-    shader->handle = glCreateProgram();
-    glProgramParameteri(shader->handle, GL_PROGRAM_SEPARABLE, GL_TRUE);
-    glProgramBinary(shader->handle, dump.binary_format, dump.binary.data(),
-                    static_cast<GLsizei>(dump.binary.size()));
+    auto program = std::make_shared<OGLProgram>();
+    program->handle = glCreateProgram();
+    glProgramParameteri(program->handle, GL_PROGRAM_SEPARABLE, GL_TRUE);
+    glProgramBinary(program->handle, precompiled_entry.binary_format,
+                    precompiled_entry.binary.data(),
+                    static_cast<GLsizei>(precompiled_entry.binary.size()));
 
     GLint link_status;
     glGetProgramiv(program->handle, GL_LINK_STATUS, &link_status);

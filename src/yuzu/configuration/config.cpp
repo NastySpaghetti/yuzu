@@ -642,14 +642,9 @@ void Config::ReadRendererValues() {
     Settings::values.gpu_accuracy = static_cast<Settings::GPUAccuracy>(gpu_accuracy_level);
     Settings::values.use_asynchronous_gpu_emulation =
         ReadSetting(QStringLiteral("use_asynchronous_gpu_emulation"), false).toBool();
-<<<<<<< HEAD
     Settings::values.use_vsync = ReadSetting(QStringLiteral("use_vsync"), true).toBool();
     Settings::values.use_fast_gpu_time =
         ReadSetting(QStringLiteral("use_fast_gpu_time"), true).toBool();
-=======
-    Settings::values.use_resolution_scanner =
-        ReadSetting(QStringLiteral("use_resolution_scanner"), false).toBool();
->>>>>>> resolution-rescaling-4
     Settings::values.force_30fps_mode =
         ReadSetting(QStringLiteral("force_30fps_mode"), false).toBool();
 
@@ -1088,13 +1083,8 @@ void Config::SaveRendererValues() {
                  0);
     WriteSetting(QStringLiteral("use_asynchronous_gpu_emulation"),
                  Settings::values.use_asynchronous_gpu_emulation, false);
-<<<<<<< HEAD
     WriteSetting(QStringLiteral("use_vsync"), Settings::values.use_vsync, true);
     WriteSetting(QStringLiteral("use_fast_gpu_time"), Settings::values.use_fast_gpu_time, true);
-=======
-    WriteSetting(QStringLiteral("use_resolution_scanner"), Settings::values.use_resolution_scanner,
-                 false);
->>>>>>> resolution-rescaling-4
     WriteSetting(QStringLiteral("force_30fps_mode"), Settings::values.force_30fps_mode, false);
 
     // Cast to double because Qt's written float values are not human-readable

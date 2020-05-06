@@ -192,7 +192,6 @@ public:
         index = index_;
     }
 
-<<<<<<< HEAD
     void SetMemoryMarked(bool is_memory_marked_) {
         is_memory_marked = is_memory_marked_;
     }
@@ -207,10 +206,6 @@ public:
 
     bool IsSyncPending() const {
         return is_sync_pending;
-=======
-    void MarkAsRescaled(const bool is_rescaled) {
-        this->is_rescaled = is_rescaled;
->>>>>>> resolution-rescaling-4
     }
 
     void MarkAsPicked(bool is_picked_) {
@@ -232,10 +227,6 @@ public:
 
     u32 GetRenderTarget() const {
         return index;
-    }
-
-    bool IsRescaled() const {
-        return is_rescaled;
     }
 
     bool IsRegistered() const {
@@ -328,12 +319,8 @@ private:
     bool is_target{};
     bool is_registered{};
     bool is_picked{};
-<<<<<<< HEAD
     bool is_memory_marked{};
     bool is_sync_pending{};
-=======
-    bool is_rescaled{};
->>>>>>> resolution-rescaling-4
     u32 index{NO_RT};
     u64 modification_tick{};
 };

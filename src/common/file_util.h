@@ -33,7 +33,6 @@ enum class UserPath {
     LoadDir,
     DumpDir,
     ShaderDir,
-    RescalingDir,
     SysDataDir,
     UserDir,
 };

@@ -241,13 +241,9 @@ void RasterizerOpenGL::SetupShaders(GLenum primitive_mode) {
             switch (program) {
             case Maxwell::ShaderProgram::Geometry:
                 program_manager.UseGeometryShader(0);
-                shader_program_manager->BindGeometryShader(nullptr);
                 break;
             case Maxwell::ShaderProgram::Fragment:
                 program_manager.UseFragmentShader(0);
-                break;
-            case Maxwell::ShaderProgram::Fragment:
-                shader_program_manager->BindFragmentShader(nullptr);
                 break;
             default:
                 break;
@@ -277,15 +273,12 @@ void RasterizerOpenGL::SetupShaders(GLenum primitive_mode) {
         case Maxwell::ShaderProgram::VertexA:
         case Maxwell::ShaderProgram::VertexB:
             program_manager.UseVertexShader(program_handle);
-            shader_program_manager->BindVertexShader(&program_handle);
             break;
         case Maxwell::ShaderProgram::Geometry:
             program_manager.UseGeometryShader(program_handle);
-            shader_program_manager->BindGeometryShader(&program_handle);
             break;
         case Maxwell::ShaderProgram::Fragment:
             program_manager.UseFragmentShader(program_handle);
-            shader_program_manager->BindFragmentShader(&program_handle);
             break;
         default:
             UNIMPLEMENTED_MSG("Unimplemented shader index={}, enable={}, offset=0x{:08X}", index,
@@ -337,7 +330,6 @@ std::size_t RasterizerOpenGL::CalculateIndexBufferSize() const {
 void RasterizerOpenGL::LoadDiskResources(const std::atomic_bool& stop_loading,
                                          const VideoCore::DiskResourceLoadCallback& callback) {
     shader_cache.LoadDiskCache(stop_loading, callback);
-    texture_cache.LoadResources();
 }
 
 void RasterizerOpenGL::SetupDirtyFlags() {
@@ -385,7 +377,6 @@ void RasterizerOpenGL::ConfigureFramebuffers() {
     texture_cache.GuardRenderTargets(false);
 
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, framebuffer_cache.GetFramebuffer(key));
-    state.draw.draw_framebuffer = framebuffer_cache.GetFramebuffer(fbkey);
 }
 
 void RasterizerOpenGL::ConfigureClearFramebuffer(bool using_color, bool using_depth_stencil) {
@@ -482,16 +473,11 @@ void RasterizerOpenGL::Clear() {
     SyncRasterizeEnable();
     SyncStencilTestState();
 
-    bool res_scaling;
-    if (use_color) {
-        res_scaling = texture_cache.IsResolutionScalingEnabledRT(regs.clear_buffers.RT);
-    } else {
-        res_scaling = texture_cache.IsResolutionScalingEnabledDB();
-    }
-
-    SyncViewport(clear_state, res_scaling);
     if (regs.clear_flags.scissor) {
-        SyncScissorTest(clear_state, res_scaling);
+        SyncScissorTest();
+    } else {
+        state_tracker.NotifyScissor0();
+        glDisablei(GL_SCISSOR_TEST, 0);
     }
 
     UNIMPLEMENTED_IF(regs.clear_flags.viewport);
@@ -532,7 +518,7 @@ void RasterizerOpenGL::Draw(bool is_indexed, bool is_instanced) {
     SyncLogicOpState();
     SyncCullMode();
     SyncPrimitiveRestart();
-    SyncTransformFeedback();
+    SyncScissorTest();
     SyncPointState();
     SyncLineState();
     SyncPolygonOffset();
@@ -547,6 +533,11 @@ void RasterizerOpenGL::Draw(bool is_indexed, bool is_instanced) {
     if (is_indexed) {
         buffer_size = Common::AlignUp(buffer_size, 4) + CalculateIndexBufferSize();
     }
+
+    // Uniform space for the 5 shader stages
+    buffer_size = Common::AlignUp<std::size_t>(buffer_size, 4) +
+                  (sizeof(GLShader::MaxwellUniformData) + device.GetUniformBufferAlignment()) *
+                      Maxwell::MaxShaderStage;
 
     // Add space for at least 18 constant buffers
     buffer_size += Maxwell::MaxConstBuffers *
@@ -586,19 +577,6 @@ void RasterizerOpenGL::Draw(bool is_indexed, bool is_instanced) {
     buffer_cache.Unmap();
 
     program_manager.BindGraphicsPipeline();
-
-    if (invalidate) {
-        // As all cached buffers are invalidated, we need to recheck their state.
-        gpu.dirty.ResetVertexArrays();
-    }
-
-    const bool res_scaling = texture_cache.IsResolutionScalingEnabled();
-    SyncViewport(state, res_scaling);
-    SyncScissorTest(state, res_scaling);
-
-    shader_program_manager->SetConstants(gpu, res_scaling);
-    shader_program_manager->ApplyTo(state);
-    state.Apply();
 
     if (texture_cache.TextureBarrier()) {
         glTextureBarrier();
@@ -662,10 +640,6 @@ void RasterizerOpenGL::DispatchCompute(GPUVAddr code_addr) {
     SetupComputeTextures(kernel);
     SetupComputeImages(kernel);
     program_manager.BindComputeShader(kernel->GetHandle());
-
-    const auto [program, next_bindings] = kernel->GetProgramHandle(variant);
-    state.draw.shader_program = program.handle;
-    state.draw.program_pipeline = 0;
 
     const std::size_t buffer_size =
         Tegra::Engines::KeplerCompute::NumConstBuffers *
@@ -1003,23 +977,25 @@ void RasterizerOpenGL::SetupImage(u32 binding, const Tegra::Texture::TICEntry& t
                        view->GetFormat());
 }
 
-void RasterizerOpenGL::SyncViewport(OpenGLState& current_state, bool rescaling) {
-    const auto& regs = system.GPU().Maxwell3D().regs;
-    const bool geometry_shaders_enabled =
-        regs.IsShaderConfigEnabled(static_cast<size_t>(Maxwell::ShaderProgram::Geometry));
-    const std::size_t viewport_count =
-        geometry_shaders_enabled ? Tegra::Engines::Maxwell3D::Regs::NumViewports : 1;
-    const float factor = rescaling ? Settings::values.resolution_factor : 1.0f;
-    for (std::size_t i = 0; i < viewport_count; i++) {
-        auto& viewport = current_state.viewports[i];
-        const auto& src = regs.viewports[i];
-        const Common::Rectangle<s32> viewport_rect{regs.viewport_transform[i].GetRect()};
-        viewport.x = static_cast<GLint>(viewport_rect.left * factor);
-        viewport.y = static_cast<GLint>(viewport_rect.bottom * factor);
-        viewport.width = static_cast<GLint>(viewport_rect.GetWidth() * factor);
-        viewport.height = static_cast<GLint>(viewport_rect.GetHeight() * factor);
-        viewport.depth_range_far = src.depth_range_far;
-        viewport.depth_range_near = src.depth_range_near;
+void RasterizerOpenGL::SyncViewport() {
+    auto& gpu = system.GPU().Maxwell3D();
+    auto& flags = gpu.dirty.flags;
+    const auto& regs = gpu.regs;
+
+    const bool dirty_viewport = flags[Dirty::Viewports];
+    if (dirty_viewport || flags[Dirty::ClipControl]) {
+        flags[Dirty::ClipControl] = false;
+
+        bool flip_y = false;
+        if (regs.viewport_transform[0].scale_y < 0.0) {
+            flip_y = !flip_y;
+        }
+        if (regs.screen_y_control.y_negate != 0) {
+            flip_y = !flip_y;
+        }
+        glClipControl(flip_y ? GL_UPPER_LEFT : GL_LOWER_LEFT,
+                      regs.depth_mode == Maxwell::DepthMode::ZeroToOne ? GL_ZERO_TO_ONE
+                                                                       : GL_NEGATIVE_ONE_TO_ONE);
     }
 
     if (dirty_viewport) {
@@ -1380,29 +1356,14 @@ void RasterizerOpenGL::SyncScissorTest() {
         }
         flags[Dirty::Scissor0 + index] = false;
 
-    state.logic_op.operation = MaxwellToGL::LogicOp(regs.logic_op.operation);
-}
-
-void RasterizerOpenGL::SyncScissorTest(OpenGLState& current_state, bool rescaling) {
-    const auto& regs = system.GPU().Maxwell3D().regs;
-    const bool geometry_shaders_enabled =
-        regs.IsShaderConfigEnabled(static_cast<size_t>(Maxwell::ShaderProgram::Geometry));
-    const std::size_t viewport_count =
-        geometry_shaders_enabled ? Tegra::Engines::Maxwell3D::Regs::NumViewports : 1;
-    const float factor = rescaling ? Settings::values.resolution_factor : 1.0f;
-    for (std::size_t i = 0; i < viewport_count; i++) {
-        const auto& src = regs.scissor_test[i];
-        auto& dst = current_state.viewports[i].scissor;
-        dst.enabled = (src.enable != 0);
-        if (dst.enabled == 0) {
-            return;
+        const auto& src = regs.scissor_test[index];
+        if (src.enable) {
+            glEnablei(GL_SCISSOR_TEST, static_cast<GLuint>(index));
+            glScissorIndexed(static_cast<GLuint>(index), src.min_x, src.min_y,
+                             src.max_x - src.min_x, src.max_y - src.min_y);
+        } else {
+            glDisablei(GL_SCISSOR_TEST, static_cast<GLuint>(index));
         }
-        const u32 width = src.max_x - src.min_x;
-        const u32 height = src.max_y - src.min_y;
-        dst.x = static_cast<u32>(src.min_x * factor);
-        dst.y = static_cast<u32>(src.min_y * factor);
-        dst.width = static_cast<u32>(width * factor);
-        dst.height = static_cast<u32>(height * factor);
     }
 }
 
