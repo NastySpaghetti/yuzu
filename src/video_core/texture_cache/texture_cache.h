@@ -13,6 +13,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#include <fmt/format.h>
 
 #include <boost/icl/interval_map.hpp>
 #include <boost/range/iterator_range.hpp>
@@ -31,7 +32,11 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/surface.h"
 #include "video_core/texture_cache/copy_params.h"
+<<<<<<< HEAD
 #include "video_core/texture_cache/format_lookup_table.h"
+=======
+#include "video_core/texture_cache/resolution_scaling/database.h"
+>>>>>>> resolution-rescaling-4
 #include "video_core/texture_cache/surface_base.h"
 #include "video_core/texture_cache/surface_params.h"
 #include "video_core/texture_cache/surface_view.h"
@@ -54,15 +59,24 @@ using RenderTargetConfig = Tegra::Engines::Maxwell3D::Regs::RenderTargetConfig;
 template <typename TSurface, typename TView>
 class TextureCache {
 
+private:
+    enum class UnregisterReason : u32 {
+        Invalidated,
+        Recycled,
+        Rebuilt,
+        Restructured,
+    };
+
 public:
     void InvalidateRegion(VAddr addr, std::size_t size) {
         std::lock_guard lock{mutex};
 
         for (const auto& surface : GetSurfacesInRegion(addr, size)) {
-            Unregister(surface);
+            Unregister(surface, UnregisterReason::Invalidated);
         }
     }
 
+<<<<<<< HEAD
     void OnCPUWrite(VAddr addr, std::size_t size) {
         std::lock_guard lock{mutex};
 
@@ -89,6 +103,14 @@ public:
 
     /**
      * Guarantees that rendertargets don't unregister themselves if the
+=======
+    void LoadResources() {
+        scaling_database.Init();
+    }
+
+    /***
+     * `Guard` guarantees that rendertargets don't unregister themselves if the
+>>>>>>> resolution-rescaling-4
      * collide. Protection is currently only done on 3D slices.
      */
     void GuardRenderTargets(bool new_guard) {
@@ -204,8 +226,12 @@ public:
             depth_buffer.target->MarkAsRenderTarget(false, NO_RT);
         depth_buffer.target = surface_view.first;
         depth_buffer.view = surface_view.second;
-        if (depth_buffer.target)
+        if (depth_buffer.target) {
             depth_buffer.target->MarkAsRenderTarget(true, DEPTH_RT);
+            if (IsResolutionScannerEnabled()) {
+                MarkScanner(depth_buffer.target);
+            }
+        }
         return surface_view.second;
     }
 
@@ -252,8 +278,12 @@ public:
         }
         render_targets[index].target = surface_view.first;
         render_targets[index].view = surface_view.second;
-        if (render_targets[index].target)
+        if (render_targets[index].target) {
             render_targets[index].target->MarkAsRenderTarget(true, static_cast<u32>(index));
+            if (IsResolutionScannerEnabled()) {
+                MarkScanner(render_targets[index].target);
+            }
+        }
         return surface_view.second;
     }
 
@@ -296,6 +326,7 @@ public:
         const GPUVAddr src_gpu_addr = src_config.Address();
         const GPUVAddr dst_gpu_addr = dst_config.Address();
         DeduceBestBlit(src_params, dst_params, src_gpu_addr, dst_gpu_addr);
+<<<<<<< HEAD
         const std::optional<VAddr> dst_cpu_addr =
             system.GPU().MemoryManager().GpuToCpuAddress(dst_gpu_addr);
         const std::optional<VAddr> src_cpu_addr =
@@ -304,6 +335,16 @@ public:
             GetSurface(dst_gpu_addr, *dst_cpu_addr, dst_params, true, false);
         std::pair<TSurface, TView> src_surface =
             GetSurface(src_gpu_addr, *src_cpu_addr, src_params, true, false);
+=======
+        std::pair<TSurface, TView> dst_surface = GetSurface(dst_gpu_addr, dst_params, true, false);
+        std::pair<TSurface, TView> src_surface = GetSurface(src_gpu_addr, src_params, true, false);
+        if (IsResolutionScannerEnabled()) {
+            bool is_candidate = IsInRSDatabase(src_surface.first);
+            if (is_candidate) {
+                MarkScanner(dst_surface.first);
+            }
+        }
+>>>>>>> resolution-rescaling-4
         ImageBlit(src_surface.second, dst_surface.second, copy_config);
         dst_surface.first->MarkAsModified(true, Tick());
     }
@@ -326,6 +367,7 @@ public:
         return ++ticks;
     }
 
+<<<<<<< HEAD
     void CommitAsyncFlushes() {
         committed_flushes.push_back(uncommitted_flushes);
         uncommitted_flushes.reset();
@@ -358,9 +400,47 @@ protected:
     explicit TextureCache(Core::System& system, VideoCore::RasterizerInterface& rasterizer,
                           bool is_astc_supported)
         : system{system}, is_astc_supported{is_astc_supported}, rasterizer{rasterizer} {
+=======
+    bool IsResolutionScalingEnabled() {
+        if (IsResolutionScannerEnabled()) {
+            return CheckBlackListMatch();
+        }
+        if (!EnabledRescaling()) {
+            return false;
+        }
+        return CheckResolutionScalingEnabled();
+    }
+
+    bool IsResolutionScalingEnabledRT(const std::size_t index) {
+        if (!EnabledRescaling()) {
+            return false;
+        }
+        if (render_targets[index].target) {
+            return render_targets[index].target->IsRescaled();
+        }
+        return false;
+    }
+
+    bool IsResolutionScalingEnabledDB() {
+        if (!EnabledRescaling()) {
+            return false;
+        }
+        if (depth_buffer.target) {
+            return depth_buffer.target->IsRescaled();
+        }
+        return false;
+    }
+
+protected:
+    TextureCache(Core::System& system, VideoCore::RasterizerInterface& rasterizer)
+        : system{system}, rasterizer{rasterizer}, scaling_database{system} {
+>>>>>>> resolution-rescaling-4
         for (std::size_t i = 0; i < Tegra::Engines::Maxwell3D::Regs::NumRenderTargets; i++) {
             SetEmptyColorBuffer(i);
         }
+
+        enable_resolution_scaling =
+            Settings::values.resolution_factor != 1.0f && !Settings::values.use_resolution_scanner;
 
         SetEmptyDepthBuffer();
         staging_cache.SetSize(2);
@@ -419,6 +499,7 @@ protected:
         rasterizer.UpdatePagesCachedCount(*cpu_addr, size, 1);
     }
 
+<<<<<<< HEAD
     void UnmarkMemory(TSurface surface) {
         if (!surface->IsMemoryMarked()) {
             return;
@@ -430,17 +511,32 @@ protected:
     }
 
     void Unregister(TSurface surface) {
+=======
+    void Unregister(TSurface surface, UnregisterReason reason) {
+>>>>>>> resolution-rescaling-4
         if (guard_render_targets && surface->IsProtected()) {
             return;
         }
         if (!guard_render_targets && surface->IsRenderTarget()) {
             ManageRenderTargetUnregister(surface);
         }
+<<<<<<< HEAD
         UnmarkMemory(surface);
         if (surface->IsSyncPending()) {
             marked_for_unregister.remove(surface);
             surface->SetSyncPending(false);
         }
+=======
+
+        if (IsResolutionScannerEnabled()) {
+            if (reason == UnregisterReason::Restructured) {
+                UnmarkScanner(surface);
+            }
+        }
+        const std::size_t size = surface->GetSizeInBytes();
+        const VAddr cpu_addr = surface->GetCpuAddr();
+        rasterizer.UpdatePagesCachedCount(cpu_addr, size, -1);
+>>>>>>> resolution-rescaling-4
         UnregisterInnerCache(surface);
         surface->MarkAsRegistered(false);
         ReserveSurface(surface->GetSurfaceParams(), surface);
@@ -485,6 +581,23 @@ protected:
         return new_surface;
     }
 
+<<<<<<< HEAD
+=======
+    std::pair<TSurface, TView> GetFermiSurface(
+        const Tegra::Engines::Fermi2D::Regs::Surface& config) {
+        SurfaceParams params = SurfaceParams::CreateForFermiCopySurface(config);
+        const GPUVAddr gpu_addr = config.Address();
+        return GetSurface(gpu_addr, params, true, false);
+    }
+
+    // Must be called by child's create surface
+    void SignalCreatedSurface(TSurface& new_surface) {
+        if (EnabledRescaling() && IsInRSDatabase(new_surface)) {
+            new_surface->MarkAsRescaled(true);
+        }
+    }
+
+>>>>>>> resolution-rescaling-4
     Core::System& system;
     const bool is_astc_supported;
 
@@ -573,7 +686,7 @@ private:
                                               const MatchTopologyResult untopological) {
         const bool do_load = preserve_contents && Settings::IsGPULevelExtreme();
         for (auto& surface : overlaps) {
-            Unregister(surface);
+            Unregister(surface, UnregisterReason::Recycled);
         }
         switch (PickStrategy(overlaps, params, gpu_addr, untopological)) {
         case RecycleStrategy::Ignore: {
@@ -634,7 +747,27 @@ private:
                 ImageCopy(current_surface, new_surface, brick);
             }
         }
+<<<<<<< HEAD
         Swap(current_surface, new_surface);
+=======
+        if (IsResolutionScannerEnabled()) {
+            if (IsInRSDatabase(current_surface)) {
+                if (IsRSBlacklisted(new_surface)) {
+                    UnmarkScanner(current_surface);
+                } else {
+                    MarkScanner(new_surface);
+                }
+            } else if (IsInRSDatabase(new_surface)) {
+                if (IsRSBlacklisted(current_surface)) {
+                    UnmarkScanner(new_surface);
+                } else {
+                    MarkScanner(current_surface);
+                }
+            }
+        }
+        Unregister(current_surface, UnregisterReason::Rebuilt);
+        Register(new_surface);
+>>>>>>> resolution-rescaling-4
         new_surface->MarkAsModified(current_surface->IsModified(), Tick());
         return {new_surface, new_surface->GetMainView()};
     }
@@ -716,8 +849,13 @@ private:
         } else if (Settings::IsGPULevelExtreme() && passed_tests != overlaps.size()) {
             return {};
         }
+<<<<<<< HEAD
         for (const auto& surface : overlaps) {
             Unregister(surface);
+=======
+        for (auto surface : overlaps) {
+            Unregister(surface, UnregisterReason::Restructured);
+>>>>>>> resolution-rescaling-4
         }
         new_surface->MarkAsModified(modified, Tick());
         Register(new_surface);
@@ -1112,7 +1250,30 @@ private:
         return {new_surface, new_surface->GetMainView()};
     }
 
-    void LoadSurface(const TSurface& surface) {
+    void LoadSurfaceRescaled(TSurface& surface) {
+        const auto& params = surface->GetSurfaceParams();
+        enable_resolution_scaling = false;
+        TSurface proxy = CreateSurface(surface->GetGpuAddr(), params);
+        enable_resolution_scaling = true;
+        staging_cache.GetBuffer(0).resize(proxy->GetHostSizeInBytes());
+        proxy->LoadBuffer(system.GPU().MemoryManager(), staging_cache);
+        proxy->UploadTexture(staging_cache.GetBuffer(0));
+        Tegra::Engines::Fermi2D::Config copy_config;
+        const Common::Rectangle<u32> rect{0, 0, params.width, params.height};
+        copy_config.operation = Tegra::Engines::Fermi2D::Operation::SrcCopy;
+        copy_config.filter = Tegra::Engines::Fermi2D::Filter::Linear;
+        copy_config.src_rect = rect;
+        copy_config.dst_rect = rect;
+        TView src_view = proxy->GetMainView();
+        TView dst_view = surface->GetMainView();
+        ImageBlit(src_view, dst_view, copy_config);
+    }
+
+    void LoadSurface(TSurface& surface) {
+        if (surface->IsRescaled()) {
+            LoadSurfaceRescaled(surface);
+            return;
+        }
         staging_cache.GetBuffer(0).resize(surface->GetHostSizeInBytes());
         surface->LoadBuffer(system.GPU().MemoryManager(), staging_cache);
         surface->UploadTexture(staging_cache.GetBuffer(0));
@@ -1122,6 +1283,9 @@ private:
     void FlushSurface(const TSurface& surface) {
         if (!surface->IsModified()) {
             return;
+        }
+        if (IsResolutionScannerEnabled()) {
+            UnmarkScanner(surface);
         }
         staging_cache.GetBuffer(0).resize(surface->GetHostSizeInBytes());
         surface->DownloadTexture(staging_cache.GetBuffer(0));
@@ -1193,6 +1357,115 @@ private:
         return {};
     }
 
+    bool EnabledRescaling() const {
+        return enable_resolution_scaling;
+    }
+
+    bool IsResolutionScannerEnabled() const {
+        return Settings::values.use_resolution_scanner;
+    }
+
+    void UnmarkScanner(const TSurface& surface) {
+        const auto params = surface->GetSurfaceParams();
+        scaling_database.Unregister(params.pixel_format, params.width, params.height);
+    }
+
+    void MarkScanner(const TSurface& surface) {
+        const auto params = surface->GetSurfaceParams();
+        if (params.target != SurfaceTarget::Texture2D || params.num_levels > 1 ||
+            params.IsCompressed() || params.block_depth > 1) {
+            return;
+        }
+        scaling_database.Register(params.pixel_format, params.width, params.height);
+    }
+
+    bool IsRSBlacklisted(const TSurface& surface) const {
+        const auto params = surface->GetSurfaceParams();
+        return scaling_database.IsBlacklisted(params.pixel_format, params.width, params.height);
+    }
+
+    bool IsInRSDatabase(const TSurface& surface) const {
+        const auto& params = surface->GetSurfaceParams();
+        return scaling_database.IsInDatabase(params.pixel_format, params.width, params.height);
+    }
+
+    bool CheckBlackListMatch() {
+        u32 enabled_targets = 0;
+        u32 black_listed = 0;
+        bool black_list = false;
+        for (const auto& target : render_targets) {
+            if (target.target) {
+                enabled_targets++;
+                if (IsRSBlacklisted(target.target)) {
+                    black_list = true;
+                    black_listed++;
+                }
+            }
+        }
+        if (depth_buffer.target) {
+            enabled_targets++;
+            if (IsRSBlacklisted(depth_buffer.target)) {
+                black_list = true;
+                black_listed++;
+            }
+        }
+        if (black_list) {
+            if (black_listed != enabled_targets) {
+                std::string blacklist_msg{};
+                for (const auto& target : render_targets) {
+                    if (target.target) {
+                        UnmarkScanner(target.target);
+                        const auto& params = target.target->GetSurfaceParams();
+                        blacklist_msg += fmt::format("Format:{}, Height:{}, Width:{}\n",
+                                                     static_cast<u32>(params.pixel_format),
+                                                     params.height, params.width);
+                    }
+                }
+                if (depth_buffer.target) {
+                    UnmarkScanner(depth_buffer.target);
+                    const auto& params = depth_buffer.target->GetSurfaceParams();
+                    blacklist_msg += fmt::format("Format:{}, Height:{}, Width:{}\n",
+                                                 static_cast<u32>(params.pixel_format),
+                                                 params.height, params.width);
+                }
+                LOG_CRITICAL(HW_GPU, "Scan detected a conflict:\n{}\nBlacklisting all",
+                             blacklist_msg);
+            }
+        }
+        return false;
+    }
+
+    bool CheckResolutionScalingEnabled() {
+        u32 enabled_targets = 0;
+        u32 rescaled_targets = 0;
+        bool rescaling = false;
+        for (const auto& target : render_targets) {
+            if (target.target) {
+                enabled_targets++;
+                if (target.target->IsRescaled()) {
+                    rescaling = true;
+                    rescaled_targets++;
+                }
+            }
+        }
+        if (depth_buffer.target) {
+            enabled_targets++;
+            if (depth_buffer.target->IsRescaled()) {
+                rescaling = true;
+                rescaled_targets++;
+            }
+        }
+        if (rescaling) {
+            if (rescaled_targets != enabled_targets) {
+                LOG_CRITICAL(HW_GPU,
+                             "Rescaling Database is incorrectly set! Rescan the database!.");
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
     constexpr PixelFormat GetSiblingFormat(PixelFormat format) const {
         return siblings_table[static_cast<std::size_t>(format)];
     }
@@ -1248,6 +1521,7 @@ private:
     // Guards the cache for protection conflicts.
     bool guard_render_targets{};
     bool guard_samplers{};
+    bool enable_resolution_scaling{};
 
     // The siblings table is for formats that can inter exchange with one another
     // without causing issues. This is only valid when a conflict occurs on a non
@@ -1290,6 +1564,8 @@ private:
 
     StagingCache staging_cache;
     std::recursive_mutex mutex;
+
+    Resolution::ScalingDatabase scaling_database;
 };
 
 } // namespace VideoCommon

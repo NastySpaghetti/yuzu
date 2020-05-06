@@ -22,8 +22,12 @@
 #include "video_core/renderer_opengl/gl_resource_manager.h"
 #include "video_core/renderer_opengl/gl_shader_decompiler.h"
 #include "video_core/renderer_opengl/gl_shader_disk_cache.h"
+<<<<<<< HEAD
 #include "video_core/shader/registry.h"
 #include "video_core/shader/shader_ir.h"
+=======
+#include "video_core/renderer_opengl/gl_shader_manager.h"
+>>>>>>> resolution-rescaling-4
 
 namespace Core {
 class System;
@@ -41,6 +45,10 @@ class RasterizerOpenGL;
 struct UnspecializedShader;
 
 using Shader = std::shared_ptr<CachedShader>;
+<<<<<<< HEAD
+=======
+using CachedProgram = std::shared_ptr<GLShader::StageProgram>;
+>>>>>>> resolution-rescaling-4
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 
 struct PrecompiledShader {
@@ -75,10 +83,30 @@ public:
         return entries;
     }
 
+<<<<<<< HEAD
     static Shader CreateStageFromMemory(const ShaderParameters& params,
                                         Maxwell::ShaderProgram program_type,
                                         ProgramCode program_code, ProgramCode program_code_b);
     static Shader CreateKernelFromMemory(const ShaderParameters& params, ProgramCode code);
+=======
+    /// Gets the GL program handle for the shader
+    std::tuple<GLShader::StageProgram&, BaseBindings> GetProgramHandle(
+        const ProgramVariant& variant);
+
+private:
+    explicit CachedShader(const ShaderParameters& params, ProgramType program_type,
+                          GLShader::ProgramResult result);
+
+    CachedProgram TryLoadProgram(const ProgramVariant& variant) const;
+
+    ShaderDiskCacheUsage GetUsage(const ProgramVariant& variant) const;
+
+    VAddr cpu_addr{};
+    u64 unique_identifier{};
+    ProgramType program_type{};
+    ShaderDiskCacheOpenGL& disk_cache;
+    const PrecompiledPrograms& precompiled_programs;
+>>>>>>> resolution-rescaling-4
 
     static Shader CreateFromCache(const ShaderParameters& params,
                                   const PrecompiledShader& precompiled_shader,

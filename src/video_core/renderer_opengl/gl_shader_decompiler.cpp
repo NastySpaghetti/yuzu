@@ -1141,8 +1141,23 @@ private:
                 return {fmt::format("gl_in[{}].gl_Position{}", Visit(buffer).AsUint(),
                                     GetSwizzle(element)),
                         Type::Float};
+<<<<<<< HEAD
             case ShaderType::Fragment:
                 return {"gl_FragCoord"s + GetSwizzle(element), Type::Float};
+=======
+            case ProgramType::Fragment: {
+                switch (element) {
+                case 0:
+                    return {"(gl_FragCoord.x / utof(config_pack[3]))", Type::Float};
+                case 1:
+                    return {"(gl_FragCoord.y / utof(config_pack[3]))", Type::Float};
+                case 2:
+                    return {"gl_FragCoord.z", Type::Float};
+                case 3:
+                    return {"1.0f", Type::Float};
+                }
+            }
+>>>>>>> resolution-rescaling-4
             default:
                 UNREACHABLE();
                 return {"0", Type::Int};
@@ -2844,6 +2859,7 @@ void GLSLDecompiler::DecompileAST() {
 
 } // Anonymous namespace
 
+<<<<<<< HEAD
 ShaderEntries MakeEntries(const VideoCommon::Shader::ShaderIR& ir) {
     ShaderEntries entries;
     for (const auto& cbuf : ir.GetConstantBuffers()) {
@@ -2866,6 +2882,22 @@ ShaderEntries MakeEntries(const VideoCommon::Shader::ShaderIR& ir) {
     }
     entries.shader_length = ir.GetLength();
     return entries;
+=======
+std::string GetCommonDeclarations() {
+    return fmt::format(
+        "#define ftoi floatBitsToInt\n"
+        "#define ftou floatBitsToUint\n"
+        "#define itof intBitsToFloat\n"
+        "#define utof uintBitsToFloat\n\n"
+        "bvec2 HalfFloatNanComparison(bvec2 comparison, vec2 pair1, vec2 pair2) {{\n"
+        "    bvec2 is_nan1 = isnan(pair1);\n"
+        "    bvec2 is_nan2 = isnan(pair2);\n"
+        "    return bvec2(comparison.x || is_nan1.x || is_nan2.x, comparison.y || is_nan1.y || "
+        "is_nan2.y);\n"
+        "}}\n\n"
+        "uniform uvec4 config_pack; // instance_id, flip_stage, y_direction, padding\n"
+        "uniform vec2 viewport_flip;\n\n");
+>>>>>>> resolution-rescaling-4
 }
 
 std::string DecompileShader(const Device& device, const ShaderIR& ir, const Registry& registry,

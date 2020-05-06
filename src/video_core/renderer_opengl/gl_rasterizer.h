@@ -139,7 +139,7 @@ private:
     void SetupImage(u32 binding, const Tegra::Texture::TICEntry& tic, const ImageEntry& entry);
 
     /// Syncs the viewport and depth range to match the guest state
-    void SyncViewport();
+    void SyncViewport(OpenGLState& current_state, bool rescaling);
 
     /// Syncs the depth clamp state
     void SyncDepthClamp();
@@ -175,7 +175,7 @@ private:
     void SyncMultiSampleState();
 
     /// Syncs the scissor test state to match the guest state
-    void SyncScissorTest();
+    void SyncScissorTest(OpenGLState& current_state, bool rescaling);
 
     /// Syncs the point state to match the guest state
     void SyncPointState();
