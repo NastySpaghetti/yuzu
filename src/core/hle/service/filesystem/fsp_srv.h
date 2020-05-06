@@ -50,7 +50,6 @@ private:
     void OpenPatchDataStorageByCurrentProcess(Kernel::HLERequestContext& ctx);
     void OutputAccessLogToSdCard(Kernel::HLERequestContext& ctx);
     void GetAccessLogVersionInfo(Kernel::HLERequestContext& ctx);
-    void OpenMultiCommitManager(Kernel::HLERequestContext& ctx);
 
     FileSystemController& fsc;
 

@@ -89,5 +89,6 @@ private:
         buttons;
     std::array<std::unique_ptr<Input::AnalogDevice>, Settings::NativeAnalog::NUM_STICKS_HID>
         analogs;
+    Core::System& system;
 };
 } // namespace Service::HID

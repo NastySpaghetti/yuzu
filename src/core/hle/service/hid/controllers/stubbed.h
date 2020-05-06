@@ -30,5 +30,6 @@ public:
 private:
     bool smart_update{};
     std::size_t common_offset{};
+    Core::System& system;
 };
 } // namespace Service::HID

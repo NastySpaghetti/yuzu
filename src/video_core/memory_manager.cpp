@@ -6,10 +6,9 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "core/core.h"
-#include "core/hle/kernel/memory/page_table.h"
 #include "core/hle/kernel/process.h"
+#include "core/hle/kernel/vm_manager.h"
 #include "core/memory.h"
-#include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 
@@ -17,7 +16,10 @@ namespace Tegra {
 
 MemoryManager::MemoryManager(Core::System& system, VideoCore::RasterizerInterface& rasterizer)
     : rasterizer{rasterizer}, system{system} {
-    page_table.Resize(address_space_width, page_bits, false);
+    std::fill(page_table.pointers.begin(), page_table.pointers.end(), nullptr);
+    std::fill(page_table.attributes.begin(), page_table.attributes.end(),
+              Common::PageType::Unmapped);
+    page_table.Resize(address_space_width);
 
     // Initialize the map with a single free region covering the entire managed space.
     VirtualMemoryArea initial_vma;
@@ -50,9 +52,12 @@ GPUVAddr MemoryManager::MapBufferEx(VAddr cpu_addr, u64 size) {
     const u64 aligned_size{Common::AlignUp(size, page_size)};
     const GPUVAddr gpu_addr{FindFreeRegion(address_space_base, aligned_size)};
 
-    MapBackingMemory(gpu_addr, system.Memory().GetPointer(cpu_addr), aligned_size, cpu_addr);
-    ASSERT(
-        system.CurrentProcess()->PageTable().LockForDeviceAddressSpace(cpu_addr, size).IsSuccess());
+    MapBackingMemory(gpu_addr, Memory::GetPointer(cpu_addr), aligned_size, cpu_addr);
+    ASSERT(system.CurrentProcess()
+               ->VMManager()
+               .SetMemoryAttribute(cpu_addr, size, Kernel::MemoryAttribute::DeviceMapped,
+                                   Kernel::MemoryAttribute::DeviceMapped)
+               .IsSuccess());
 
     return gpu_addr;
 }
@@ -62,9 +67,12 @@ GPUVAddr MemoryManager::MapBufferEx(VAddr cpu_addr, GPUVAddr gpu_addr, u64 size)
 
     const u64 aligned_size{Common::AlignUp(size, page_size)};
 
-    MapBackingMemory(gpu_addr, system.Memory().GetPointer(cpu_addr), aligned_size, cpu_addr);
-    ASSERT(
-        system.CurrentProcess()->PageTable().LockForDeviceAddressSpace(cpu_addr, size).IsSuccess());
+    MapBackingMemory(gpu_addr, Memory::GetPointer(cpu_addr), aligned_size, cpu_addr);
+    ASSERT(system.CurrentProcess()
+               ->VMManager()
+               .SetMemoryAttribute(cpu_addr, size, Kernel::MemoryAttribute::DeviceMapped,
+                                   Kernel::MemoryAttribute::DeviceMapped)
+               .IsSuccess());
     return gpu_addr;
 }
 
@@ -72,16 +80,16 @@ GPUVAddr MemoryManager::UnmapBuffer(GPUVAddr gpu_addr, u64 size) {
     ASSERT((gpu_addr & page_mask) == 0);
 
     const u64 aligned_size{Common::AlignUp(size, page_size)};
+    const CacheAddr cache_addr{ToCacheAddr(GetPointer(gpu_addr))};
     const auto cpu_addr = GpuToCpuAddress(gpu_addr);
     ASSERT(cpu_addr);
 
-    // Flush and invalidate through the GPU interface, to be asynchronous if possible.
-    system.GPU().FlushAndInvalidateRegion(*cpu_addr, aligned_size);
-
+    rasterizer.FlushAndInvalidateRegion(cache_addr, aligned_size);
     UnmapRange(gpu_addr, aligned_size);
     ASSERT(system.CurrentProcess()
-               ->PageTable()
-               .UnlockForDeviceAddressSpace(cpu_addr.value(), size)
+               ->VMManager()
+               .SetMemoryAttribute(cpu_addr.value(), size, Kernel::MemoryAttribute::DeviceMapped,
+                                   Kernel::MemoryAttribute::None)
                .IsSuccess());
 
     return gpu_addr;
@@ -129,16 +137,24 @@ T MemoryManager::Read(GPUVAddr addr) const {
         return {};
     }
 
-    const u8* page_pointer{GetPointer(addr)};
+    const u8* page_pointer{page_table.pointers[addr >> page_bits]};
     if (page_pointer) {
         // NOTE: Avoid adding any extra logic to this fast-path block
         T value;
-        std::memcpy(&value, page_pointer, sizeof(T));
+        std::memcpy(&value, &page_pointer[addr & page_mask], sizeof(T));
         return value;
     }
 
-    UNREACHABLE();
-
+    switch (page_table.attributes[addr >> page_bits]) {
+    case Common::PageType::Unmapped:
+        LOG_ERROR(HW_GPU, "Unmapped Read{} @ 0x{:08X}", sizeof(T) * 8, addr);
+        return 0;
+    case Common::PageType::Memory:
+        ASSERT_MSG(false, "Mapped memory page without a pointer @ {:016X}", addr);
+        break;
+    default:
+        UNREACHABLE();
+    }
     return {};
 }
 
@@ -148,14 +164,24 @@ void MemoryManager::Write(GPUVAddr addr, T data) {
         return;
     }
 
-    u8* page_pointer{GetPointer(addr)};
+    u8* page_pointer{page_table.pointers[addr >> page_bits]};
     if (page_pointer) {
         // NOTE: Avoid adding any extra logic to this fast-path block
-        std::memcpy(page_pointer, &data, sizeof(T));
+        std::memcpy(&page_pointer[addr & page_mask], &data, sizeof(T));
         return;
     }
 
-    UNREACHABLE();
+    switch (page_table.attributes[addr >> page_bits]) {
+    case Common::PageType::Unmapped:
+        LOG_ERROR(HW_GPU, "Unmapped Write{} 0x{:08X} @ 0x{:016X}", sizeof(data) * 8,
+                  static_cast<u32>(data), addr);
+        return;
+    case Common::PageType::Memory:
+        ASSERT_MSG(false, "Mapped memory page without a pointer @ {:016X}", addr);
+        break;
+    default:
+        UNREACHABLE();
+    }
 }
 
 template u8 MemoryManager::Read<u8>(GPUVAddr addr) const;
@@ -172,12 +198,9 @@ u8* MemoryManager::GetPointer(GPUVAddr addr) {
         return {};
     }
 
-    auto& memory = system.Memory();
-
-    const VAddr page_addr{page_table.backing_addr[addr >> page_bits]};
-
-    if (page_addr != 0) {
-        return memory.GetPointer(page_addr + (addr & page_mask));
+    u8* const page_pointer{page_table.pointers[addr >> page_bits]};
+    if (page_pointer != nullptr) {
+        return page_pointer + (addr & page_mask);
     }
 
     LOG_ERROR(HW_GPU, "Unknown GetPointer @ 0x{:016X}", addr);
@@ -189,12 +212,9 @@ const u8* MemoryManager::GetPointer(GPUVAddr addr) const {
         return {};
     }
 
-    const auto& memory = system.Memory();
-
-    const VAddr page_addr{page_table.backing_addr[addr >> page_bits]};
-
-    if (page_addr != 0) {
-        return memory.GetPointer(page_addr + (addr & page_mask));
+    const u8* const page_pointer{page_table.pointers[addr >> page_bits]};
+    if (page_pointer != nullptr) {
+        return page_pointer + (addr & page_mask);
     }
 
     LOG_ERROR(HW_GPU, "Unknown GetPointer @ 0x{:016X}", addr);
@@ -215,17 +235,20 @@ void MemoryManager::ReadBlock(GPUVAddr src_addr, void* dest_buffer, const std::s
     std::size_t page_index{src_addr >> page_bits};
     std::size_t page_offset{src_addr & page_mask};
 
-    auto& memory = system.Memory();
-
     while (remaining_size > 0) {
         const std::size_t copy_amount{
             std::min(static_cast<std::size_t>(page_size) - page_offset, remaining_size)};
 
-        const VAddr src_addr{page_table.backing_addr[page_index] + page_offset};
-        // Flush must happen on the rasterizer interface, such that memory is always synchronous
-        // when it is read (even when in asynchronous GPU mode). Fixes Dead Cells title menu.
-        rasterizer.FlushRegion(src_addr, copy_amount);
-        memory.ReadBlockUnsafe(src_addr, dest_buffer, copy_amount);
+        switch (page_table.attributes[page_index]) {
+        case Common::PageType::Memory: {
+            const u8* src_ptr{page_table.pointers[page_index] + page_offset};
+            rasterizer.FlushRegion(ToCacheAddr(src_ptr), copy_amount);
+            std::memcpy(dest_buffer, src_ptr, copy_amount);
+            break;
+        }
+        default:
+            UNREACHABLE();
+        }
 
         page_index++;
         page_offset = 0;
@@ -240,15 +263,13 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr src_addr, void* dest_buffer,
     std::size_t page_index{src_addr >> page_bits};
     std::size_t page_offset{src_addr & page_mask};
 
-    auto& memory = system.Memory();
-
     while (remaining_size > 0) {
         const std::size_t copy_amount{
             std::min(static_cast<std::size_t>(page_size) - page_offset, remaining_size)};
         const u8* page_pointer = page_table.pointers[page_index];
         if (page_pointer) {
-            const VAddr src_addr{page_table.backing_addr[page_index] + page_offset};
-            memory.ReadBlockUnsafe(src_addr, dest_buffer, copy_amount);
+            const u8* src_ptr{page_pointer + page_offset};
+            std::memcpy(dest_buffer, src_ptr, copy_amount);
         } else {
             std::memset(dest_buffer, 0, copy_amount);
         }
@@ -264,17 +285,20 @@ void MemoryManager::WriteBlock(GPUVAddr dest_addr, const void* src_buffer, const
     std::size_t page_index{dest_addr >> page_bits};
     std::size_t page_offset{dest_addr & page_mask};
 
-    auto& memory = system.Memory();
-
     while (remaining_size > 0) {
         const std::size_t copy_amount{
             std::min(static_cast<std::size_t>(page_size) - page_offset, remaining_size)};
 
-        const VAddr dest_addr{page_table.backing_addr[page_index] + page_offset};
-        // Invalidate must happen on the rasterizer interface, such that memory is always
-        // synchronous when it is written (even when in asynchronous GPU mode).
-        rasterizer.InvalidateRegion(dest_addr, copy_amount);
-        memory.WriteBlockUnsafe(dest_addr, src_buffer, copy_amount);
+        switch (page_table.attributes[page_index]) {
+        case Common::PageType::Memory: {
+            u8* dest_ptr{page_table.pointers[page_index] + page_offset};
+            rasterizer.InvalidateRegion(ToCacheAddr(dest_ptr), copy_amount);
+            std::memcpy(dest_ptr, src_buffer, copy_amount);
+            break;
+        }
+        default:
+            UNREACHABLE();
+        }
 
         page_index++;
         page_offset = 0;
@@ -289,15 +313,13 @@ void MemoryManager::WriteBlockUnsafe(GPUVAddr dest_addr, const void* src_buffer,
     std::size_t page_index{dest_addr >> page_bits};
     std::size_t page_offset{dest_addr & page_mask};
 
-    auto& memory = system.Memory();
-
     while (remaining_size > 0) {
         const std::size_t copy_amount{
             std::min(static_cast<std::size_t>(page_size) - page_offset, remaining_size)};
         u8* page_pointer = page_table.pointers[page_index];
         if (page_pointer) {
-            const VAddr dest_addr{page_table.backing_addr[page_index] + page_offset};
-            memory.WriteBlockUnsafe(dest_addr, src_buffer, copy_amount);
+            u8* dest_ptr{page_pointer + page_offset};
+            std::memcpy(dest_ptr, src_buffer, copy_amount);
         }
         page_index++;
         page_offset = 0;
@@ -307,21 +329,37 @@ void MemoryManager::WriteBlockUnsafe(GPUVAddr dest_addr, const void* src_buffer,
 }
 
 void MemoryManager::CopyBlock(GPUVAddr dest_addr, GPUVAddr src_addr, const std::size_t size) {
-    std::vector<u8> tmp_buffer(size);
-    ReadBlock(src_addr, tmp_buffer.data(), size);
-    WriteBlock(dest_addr, tmp_buffer.data(), size);
+    std::size_t remaining_size{size};
+    std::size_t page_index{src_addr >> page_bits};
+    std::size_t page_offset{src_addr & page_mask};
+
+    while (remaining_size > 0) {
+        const std::size_t copy_amount{
+            std::min(static_cast<std::size_t>(page_size) - page_offset, remaining_size)};
+
+        switch (page_table.attributes[page_index]) {
+        case Common::PageType::Memory: {
+            const u8* src_ptr{page_table.pointers[page_index] + page_offset};
+            rasterizer.FlushRegion(ToCacheAddr(src_ptr), copy_amount);
+            WriteBlock(dest_addr, src_ptr, copy_amount);
+            break;
+        }
+        default:
+            UNREACHABLE();
+        }
+
+        page_index++;
+        page_offset = 0;
+        dest_addr += static_cast<VAddr>(copy_amount);
+        src_addr += static_cast<VAddr>(copy_amount);
+        remaining_size -= copy_amount;
+    }
 }
 
 void MemoryManager::CopyBlockUnsafe(GPUVAddr dest_addr, GPUVAddr src_addr, const std::size_t size) {
     std::vector<u8> tmp_buffer(size);
     ReadBlockUnsafe(src_addr, tmp_buffer.data(), size);
     WriteBlockUnsafe(dest_addr, tmp_buffer.data(), size);
-}
-
-bool MemoryManager::IsGranularRange(GPUVAddr gpu_addr, std::size_t size) {
-    const VAddr addr = page_table.backing_addr[gpu_addr >> page_bits];
-    const std::size_t page = (addr & Core::Memory::PAGE_MASK) + size;
-    return page <= Core::Memory::PAGE_SIZE;
 }
 
 void MemoryManager::MapPages(GPUVAddr base, u64 size, u8* memory, Common::PageType type,
@@ -333,13 +371,12 @@ void MemoryManager::MapPages(GPUVAddr base, u64 size, u8* memory, Common::PageTy
     ASSERT_MSG(end <= page_table.pointers.size(), "out of range mapping at {:016X}",
                base + page_table.pointers.size());
 
-    if (memory == nullptr) {
-        while (base != end) {
-            page_table.pointers[base] = nullptr;
-            page_table.backing_addr[base] = 0;
+    std::fill(page_table.attributes.begin() + base, page_table.attributes.begin() + end, type);
 
-            base += 1;
-        }
+    if (memory == nullptr) {
+        std::fill(page_table.pointers.begin() + base, page_table.pointers.begin() + end, memory);
+        std::fill(page_table.backing_addr.begin() + base, page_table.backing_addr.begin() + end,
+                  backing_addr);
     } else {
         while (base != end) {
             page_table.pointers[base] = memory;

@@ -4,11 +4,12 @@
 
 #pragma once
 
-#include <optional>
-#include <tuple>
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 
+#include "common/assert.h"
+#include "common/binary_find.h"
 #include "common/common_types.h"
 #include "video_core/gpu.h"
 #include "video_core/morton.h"
@@ -68,13 +69,13 @@ public:
         return gpu_addr;
     }
 
-    bool Overlaps(const VAddr start, const VAddr end) const {
-        return (cpu_addr < end) && (cpu_addr_end > start);
+    bool Overlaps(const CacheAddr start, const CacheAddr end) const {
+        return (cache_addr < end) && (cache_addr_end > start);
     }
 
-    bool IsInside(const GPUVAddr other_start, const GPUVAddr other_end) const {
+    bool IsInside(const GPUVAddr other_start, const GPUVAddr other_end) {
         const GPUVAddr gpu_addr_end = gpu_addr + guest_memory_size;
-        return gpu_addr <= other_start && other_end <= gpu_addr_end;
+        return (gpu_addr <= other_start && other_end <= gpu_addr_end);
     }
 
     // Use only when recycling a surface
@@ -86,13 +87,21 @@ public:
         return cpu_addr;
     }
 
-    VAddr GetCpuAddrEnd() const {
-        return cpu_addr_end;
-    }
-
     void SetCpuAddr(const VAddr new_addr) {
         cpu_addr = new_addr;
-        cpu_addr_end = new_addr + guest_memory_size;
+    }
+
+    CacheAddr GetCacheAddr() const {
+        return cache_addr;
+    }
+
+    CacheAddr GetCacheAddrEnd() const {
+        return cache_addr_end;
+    }
+
+    void SetCacheAddr(const CacheAddr new_addr) {
+        cache_addr = new_addr;
+        cache_addr_end = new_addr + guest_memory_size;
     }
 
     const SurfaceParams& GetSurfaceParams() const {
@@ -111,12 +120,16 @@ public:
         return mipmap_sizes[level];
     }
 
-    bool IsLinear() const {
-        return !params.is_tiled;
+    void MarkAsContinuous(const bool is_continuous) {
+        this->is_continuous = is_continuous;
     }
 
-    bool IsConverted() const {
-        return is_converted;
+    bool IsContinuous() const {
+        return is_continuous;
+    }
+
+    bool IsLinear() const {
+        return !params.is_tiled;
     }
 
     bool MatchFormat(VideoCore::Surface::PixelFormat pixel_format) const {
@@ -148,8 +161,7 @@ public:
     }
 
 protected:
-    explicit SurfaceBaseImpl(GPUVAddr gpu_addr, const SurfaceParams& params,
-                             bool is_astc_supported);
+    explicit SurfaceBaseImpl(GPUVAddr gpu_addr, const SurfaceParams& params);
     ~SurfaceBaseImpl() = default;
 
     virtual void DecorateSurfaceName() = 0;
@@ -157,11 +169,12 @@ protected:
     const SurfaceParams params;
     std::size_t layer_size;
     std::size_t guest_memory_size;
-    std::size_t host_memory_size;
+    const std::size_t host_memory_size;
     GPUVAddr gpu_addr{};
+    CacheAddr cache_addr{};
+    CacheAddr cache_addr_end{};
     VAddr cpu_addr{};
-    VAddr cpu_addr_end{};
-    bool is_converted{};
+    bool is_continuous{};
 
     std::vector<std::size_t> mipmap_sizes;
     std::vector<std::size_t> mipmap_offsets;
@@ -192,20 +205,8 @@ public:
         index = index_;
     }
 
-    void SetMemoryMarked(bool is_memory_marked_) {
-        is_memory_marked = is_memory_marked_;
-    }
-
-    bool IsMemoryMarked() const {
-        return is_memory_marked;
-    }
-
-    void SetSyncPending(bool is_sync_pending_) {
-        is_sync_pending = is_sync_pending_;
-    }
-
-    bool IsSyncPending() const {
-        return is_sync_pending;
+    void MarkAsRescaled(const bool is_rescaled) {
+        this->is_rescaled = is_rescaled;
     }
 
     void MarkAsPicked(bool is_picked_) {
@@ -227,6 +228,10 @@ public:
 
     u32 GetRenderTarget() const {
         return index;
+    }
+
+    bool IsRescaled() const {
+        return is_rescaled;
     }
 
     bool IsRegistered() const {
@@ -258,14 +263,16 @@ public:
         if (!layer_mipmap) {
             return {};
         }
-        const auto [end_layer, end_mipmap] = *layer_mipmap;
+        const u32 end_layer{layer_mipmap->first};
+        const u32 end_mipmap{layer_mipmap->second};
         if (layer != end_layer) {
             if (mipmap == 0 && end_mipmap == 0) {
-                return GetView(ViewParams(view_params.target, layer, end_layer - layer, 0, 1));
+                return GetView(ViewParams(view_params.target, layer, end_layer - layer + 1, 0, 1));
             }
             return {};
         } else {
-            return GetView(ViewParams(view_params.target, layer, 1, mipmap, end_mipmap - mipmap));
+            return GetView(
+                ViewParams(view_params.target, layer, 1, mipmap, end_mipmap - mipmap + 1));
         }
     }
 
@@ -280,7 +287,8 @@ public:
         if (!layer_mipmap) {
             return {};
         }
-        const auto [layer, mipmap] = *layer_mipmap;
+        const u32 layer{layer_mipmap->first};
+        const u32 mipmap{layer_mipmap->second};
         if (GetMipmapSize(mipmap) != candidate_size) {
             return EmplaceIrregularView(view_params, view_addr, candidate_size, mipmap, layer);
         }
@@ -292,9 +300,8 @@ public:
     }
 
 protected:
-    explicit SurfaceBase(const GPUVAddr gpu_addr, const SurfaceParams& params,
-                         bool is_astc_supported)
-        : SurfaceBaseImpl(gpu_addr, params, is_astc_supported) {}
+    explicit SurfaceBase(const GPUVAddr gpu_addr, const SurfaceParams& params)
+        : SurfaceBaseImpl(gpu_addr, params) {}
 
     ~SurfaceBase() = default;
 
@@ -319,8 +326,7 @@ private:
     bool is_target{};
     bool is_registered{};
     bool is_picked{};
-    bool is_memory_marked{};
-    bool is_sync_pending{};
+    bool is_rescaled{};
     u32 index{NO_RT};
     u64 modification_tick{};
 };

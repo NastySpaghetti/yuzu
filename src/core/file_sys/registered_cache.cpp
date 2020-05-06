@@ -62,7 +62,7 @@ static std::string GetRelativePathFromNcaID(const std::array<u8, 16>& nca_id, bo
                            Common::HexToString(nca_id, second_hex_upper));
 
     Core::Crypto::SHA256Hash hash{};
-    mbedtls_sha256_ret(nca_id.data(), nca_id.size(), hash.data(), 0);
+    mbedtls_sha256(nca_id.data(), nca_id.size(), hash.data(), 0);
     return fmt::format(cnmt_suffix ? "/000000{:02X}/{}.cnmt.nca" : "/000000{:02X}/{}.nca", hash[0],
                        Common::HexToString(nca_id, second_hex_upper));
 }
@@ -141,7 +141,7 @@ bool PlaceholderCache::Create(const NcaID& id, u64 size) const {
     }
 
     Core::Crypto::SHA256Hash hash{};
-    mbedtls_sha256_ret(id.data(), id.size(), hash.data(), 0);
+    mbedtls_sha256(id.data(), id.size(), hash.data(), 0);
     const auto dirname = fmt::format("000000{:02X}", hash[0]);
 
     const auto dir2 = GetOrCreateDirectoryRelative(dir, dirname);
@@ -165,7 +165,7 @@ bool PlaceholderCache::Delete(const NcaID& id) const {
     }
 
     Core::Crypto::SHA256Hash hash{};
-    mbedtls_sha256_ret(id.data(), id.size(), hash.data(), 0);
+    mbedtls_sha256(id.data(), id.size(), hash.data(), 0);
     const auto dirname = fmt::format("000000{:02X}", hash[0]);
 
     const auto dir2 = GetOrCreateDirectoryRelative(dir, dirname);
@@ -591,23 +591,19 @@ InstallResult RegisteredCache::InstallEntry(const NSP& nsp, bool overwrite_if_ex
 InstallResult RegisteredCache::InstallEntry(const NCA& nca, TitleType type,
                                             bool overwrite_if_exists, const VfsCopyFunction& copy) {
     CNMTHeader header{
-        nca.GetTitleId(), // Title ID
-        0,                // Ignore/Default title version
-        type,             // Type
-        {},               // Padding
-        0x10,             // Default table offset
-        1,                // 1 Content Entry
-        0,                // No Meta Entries
-        {},               // Padding
-        {},               // Reserved 1
-        0,                // Is committed
-        0,                // Required download system version
-        {},               // Reserved 2
+        nca.GetTitleId(), ///< Title ID
+        0,                ///< Ignore/Default title version
+        type,             ///< Type
+        {},               ///< Padding
+        0x10,             ///< Default table offset
+        1,                ///< 1 Content Entry
+        0,                ///< No Meta Entries
+        {},               ///< Padding
     };
     OptionalHeader opt_header{0, 0};
     ContentRecord c_rec{{}, {}, {}, GetCRTypeFromNCAType(nca.GetType()), {}};
     const auto& data = nca.GetBaseFile()->ReadBytes(0x100000);
-    mbedtls_sha256_ret(data.data(), data.size(), c_rec.hash.data(), 0);
+    mbedtls_sha256(data.data(), data.size(), c_rec.hash.data(), 0);
     memcpy(&c_rec.nca_id, &c_rec.hash, 16);
     const CNMT new_cnmt(header, opt_header, {c_rec}, {});
     if (!RawInstallYuzuMeta(new_cnmt))
@@ -630,7 +626,7 @@ InstallResult RegisteredCache::RawInstallNCA(const NCA& nca, const VfsCopyFuncti
         id = *override_id;
     } else {
         const auto& data = in->ReadBytes(0x100000);
-        mbedtls_sha256_ret(data.data(), data.size(), hash.data(), 0);
+        mbedtls_sha256(data.data(), data.size(), hash.data(), 0);
         memcpy(id.data(), hash.data(), 16);
     }
 
@@ -852,8 +848,7 @@ VirtualFile ManualContentProvider::GetEntryUnparsed(u64 title_id, ContentRecordT
 VirtualFile ManualContentProvider::GetEntryRaw(u64 title_id, ContentRecordType type) const {
     const auto iter =
         std::find_if(entries.begin(), entries.end(), [title_id, type](const auto& entry) {
-            const auto content_type = std::get<1>(entry.first);
-            const auto e_title_id = std::get<2>(entry.first);
+            const auto [title_type, content_type, e_title_id] = entry.first;
             return content_type == type && e_title_id == title_id;
         });
     if (iter == entries.end())

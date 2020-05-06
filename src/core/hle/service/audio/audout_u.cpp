@@ -43,8 +43,7 @@ public:
     IAudioOut(Core::System& system, AudoutParams audio_params, AudioCore::AudioOut& audio_core,
               std::string&& device_name, std::string&& unique_name)
         : ServiceFramework("IAudioOut"), audio_core(audio_core),
-          device_name(std::move(device_name)),
-          audio_params(audio_params), main_memory{system.Memory()} {
+          device_name(std::move(device_name)), audio_params(audio_params) {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, &IAudioOut::GetAudioOutState, "GetAudioOutState"},
@@ -66,8 +65,8 @@ public:
         RegisterHandlers(functions);
 
         // This is the event handle used to check if the audio buffer was released
-        buffer_event =
-            Kernel::WritableEvent::CreateEventPair(system.Kernel(), "IAudioOutBufferReleased");
+        buffer_event = Kernel::WritableEvent::CreateEventPair(
+            system.Kernel(), Kernel::ResetType::Manual, "IAudioOutBufferReleased");
 
         stream = audio_core.OpenStream(system.CoreTiming(), audio_params.sample_rate,
                                        audio_params.channel_count, std::move(unique_name),
@@ -138,7 +137,7 @@ private:
         const u64 tag{rp.Pop<u64>()};
 
         std::vector<s16> samples(audio_buffer.buffer_size / sizeof(s16));
-        main_memory.ReadBlock(audio_buffer.buffer, samples.data(), audio_buffer.buffer_size);
+        Memory::ReadBlock(audio_buffer.buffer, samples.data(), audio_buffer.buffer_size);
 
         if (!audio_core.QueueBuffer(stream, tag, std::move(samples))) {
             IPC::ResponseBuilder rb{ctx, 2};
@@ -206,11 +205,10 @@ private:
     AudioCore::StreamPtr stream;
     std::string device_name;
 
-    [[maybe_unused]] AudoutParams audio_params {};
+    AudoutParams audio_params{};
 
     /// This is the event handle used to check if the audio buffer was released
     Kernel::EventPair buffer_event;
-    Core::Memory::Memory& main_memory;
 };
 
 AudOutU::AudOutU(Core::System& system_) : ServiceFramework("audout:u"), system{system_} {

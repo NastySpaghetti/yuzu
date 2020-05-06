@@ -10,6 +10,6 @@
         <file alias="256x256/plus_folder.png">icons/256x256/plus_folder.png</file>
     </qresource>
     <qresource prefix="colorful">
-        <file alias="style.qss">../default/style.qss</file>
+        <file>style.qss</file>
     </qresource>
 </RCC>

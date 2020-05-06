@@ -47,11 +47,10 @@ public:
         // clang-format on
         RegisterHandlers(functions);
 
-        system_event =
-            Kernel::WritableEvent::CreateEventPair(system.Kernel(), "IAudioRenderer:SystemEvent");
-        renderer = std::make_unique<AudioCore::AudioRenderer>(system.CoreTiming(), system.Memory(),
-                                                              audren_params, system_event.writable,
-                                                              instance_number);
+        system_event = Kernel::WritableEvent::CreateEventPair(
+            system.Kernel(), Kernel::ResetType::Manual, "IAudioRenderer:SystemEvent");
+        renderer = std::make_unique<AudioCore::AudioRenderer>(
+            system.CoreTiming(), audren_params, system_event.writable, instance_number);
     }
 
 private:
@@ -92,16 +91,11 @@ private:
     }
 
     void RequestUpdateImpl(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_Audio, "(STUBBED) called");
+        LOG_WARNING(Service_Audio, "(STUBBED) called");
 
-        auto result = renderer->UpdateAudioRenderer(ctx.ReadBuffer());
-
-        if (result.Succeeded()) {
-            ctx.WriteBuffer(result.Unwrap());
-        }
-
+        ctx.WriteBuffer(renderer->UpdateAudioRenderer(ctx.ReadBuffer()));
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(result.Code());
+        rb.Push(RESULT_SUCCESS);
     }
 
     void Start(Kernel::HLERequestContext& ctx) {
@@ -134,7 +128,7 @@ private:
         LOG_DEBUG(Service_Audio, "called. rendering_time_limit_percent={}",
                   rendering_time_limit_percent);
 
-        ASSERT(rendering_time_limit_percent <= 100);
+        ASSERT(rendering_time_limit_percent >= 0 && rendering_time_limit_percent <= 100);
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(RESULT_SUCCESS);
@@ -186,17 +180,17 @@ public:
         RegisterHandlers(functions);
 
         auto& kernel = system.Kernel();
-        buffer_event =
-            Kernel::WritableEvent::CreateEventPair(kernel, "IAudioOutBufferReleasedEvent");
+        buffer_event = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Automatic,
+                                                              "IAudioOutBufferReleasedEvent");
 
         // Should be similar to audio_output_device_switch_event
         audio_input_device_switch_event = Kernel::WritableEvent::CreateEventPair(
-            kernel, "IAudioDevice:AudioInputDeviceSwitchedEvent");
+            kernel, Kernel::ResetType::Automatic, "IAudioDevice:AudioInputDeviceSwitchedEvent");
 
         // Should only be signalled when an audio output device has been changed, example: speaker
         // to headset
         audio_output_device_switch_event = Kernel::WritableEvent::CreateEventPair(
-            kernel, "IAudioDevice:AudioOutputDeviceSwitchedEvent");
+            kernel, Kernel::ResetType::Automatic, "IAudioDevice:AudioOutputDeviceSwitchedEvent");
     }
 
 private:
@@ -257,6 +251,8 @@ private:
     }
 
     void GetAudioDeviceOutputVolume(Kernel::HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+
         const auto device_name_buffer = ctx.ReadBuffer();
         const std::string name = Common::StringFromBuffer(device_name_buffer);
 

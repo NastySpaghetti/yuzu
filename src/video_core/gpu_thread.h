@@ -10,6 +10,7 @@
 #include <optional>
 #include <thread>
 #include <variant>
+
 #include "common/threadsafe_queue.h"
 #include "video_core/gpu.h"
 
@@ -19,10 +20,10 @@ class DmaPusher;
 } // namespace Tegra
 
 namespace Core {
-namespace Frontend {
-class GraphicsContext;
-}
 class System;
+namespace Timing {
+struct EventType;
+} // namespace Timing
 } // namespace Core
 
 namespace VideoCommon::GPUThread {
@@ -47,39 +48,32 @@ struct SwapBuffersCommand final {
 
 /// Command to signal to the GPU thread to flush a region
 struct FlushRegionCommand final {
-    explicit constexpr FlushRegionCommand(VAddr addr, u64 size) : addr{addr}, size{size} {}
+    explicit constexpr FlushRegionCommand(CacheAddr addr, u64 size) : addr{addr}, size{size} {}
 
-    VAddr addr;
+    CacheAddr addr;
     u64 size;
 };
 
 /// Command to signal to the GPU thread to invalidate a region
 struct InvalidateRegionCommand final {
-    explicit constexpr InvalidateRegionCommand(VAddr addr, u64 size) : addr{addr}, size{size} {}
+    explicit constexpr InvalidateRegionCommand(CacheAddr addr, u64 size) : addr{addr}, size{size} {}
 
-    VAddr addr;
+    CacheAddr addr;
     u64 size;
 };
 
 /// Command to signal to the GPU thread to flush and invalidate a region
 struct FlushAndInvalidateRegionCommand final {
-    explicit constexpr FlushAndInvalidateRegionCommand(VAddr addr, u64 size)
+    explicit constexpr FlushAndInvalidateRegionCommand(CacheAddr addr, u64 size)
         : addr{addr}, size{size} {}
 
-    VAddr addr;
+    CacheAddr addr;
     u64 size;
 };
 
-/// Command called within the gpu, to schedule actions after a command list end
-struct OnCommandListEndCommand final {};
-
-/// Command to make the gpu look into pending requests
-struct GPUTickCommand final {};
-
 using CommandData =
     std::variant<EndProcessingCommand, SubmitListCommand, SwapBuffersCommand, FlushRegionCommand,
-                 InvalidateRegionCommand, FlushAndInvalidateRegionCommand, OnCommandListEndCommand,
-                 GPUTickCommand>;
+                 InvalidateRegionCommand, FlushAndInvalidateRegionCommand>;
 
 struct CommandDataContainer {
     CommandDataContainer() = default;
@@ -95,7 +89,9 @@ struct CommandDataContainer {
 struct SynchState final {
     std::atomic_bool is_running{true};
 
-    using CommandQueue = Common::MPSCQueue<CommandDataContainer>;
+    void WaitForSynchronization(u64 fence);
+
+    using CommandQueue = Common::SPSCQueue<CommandDataContainer>;
     CommandQueue queue;
     u64 last_fence{};
     std::atomic<u64> signaled_fence{};
@@ -108,8 +104,7 @@ public:
     ~ThreadManager();
 
     /// Creates and starts the GPU thread.
-    void StartThread(VideoCore::RendererBase& renderer, Core::Frontend::GraphicsContext& context,
-                     Tegra::DmaPusher& dma_pusher);
+    void StartThread(VideoCore::RendererBase& renderer, Tegra::DmaPusher& dma_pusher);
 
     /// Push GPU command entries to be processed
     void SubmitList(Tegra::CommandList&& entries);
@@ -118,18 +113,13 @@ public:
     void SwapBuffers(const Tegra::FramebufferConfig* framebuffer);
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
-    void FlushRegion(VAddr addr, u64 size);
+    void FlushRegion(CacheAddr addr, u64 size);
 
     /// Notify rasterizer that any caches of the specified region should be invalidated
-    void InvalidateRegion(VAddr addr, u64 size);
+    void InvalidateRegion(CacheAddr addr, u64 size);
 
     /// Notify rasterizer that any caches of the specified region should be flushed and invalidated
-    void FlushAndInvalidateRegion(VAddr addr, u64 size);
-
-    // Wait until the gpu thread is idle.
-    void WaitIdle() const;
-
-    void OnCommandListEnd();
+    void FlushAndInvalidateRegion(CacheAddr addr, u64 size);
 
 private:
     /// Pushes a command to be executed by the GPU thread
@@ -138,6 +128,7 @@ private:
 private:
     SynchState state;
     Core::System& system;
+    Core::Timing::EventType* synchronization_event{};
     std::thread thread;
     std::thread::id thread_id;
 };

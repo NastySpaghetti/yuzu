@@ -55,7 +55,11 @@
            </widget>
           </item>
           <item row="0" column="1" colspan="3">
-           <widget class="QLabel" name="username" />
+           <widget class="QLineEdit" name="edit_username">
+            <property name="maxLength">
+             <number>36</number>
+            </property>
+           </widget>
           </item>
           <item row="1" column="0">
            <widget class="QLabel" name="label_token">
@@ -75,10 +79,14 @@
             </property>
            </widget>
           </item>
+          <item row="0" column="4">
+           <widget class="QLabel" name="label_username_verified">
+           </widget>
+          </item>
           <item row="1" column="1" colspan="3">
            <widget class="QLineEdit" name="edit_token">
             <property name="maxLength">
-             <number>80</number>
+             <number>36</number>
             </property>
             <property name="echoMode">
              <enum>QLineEdit::Password</enum>

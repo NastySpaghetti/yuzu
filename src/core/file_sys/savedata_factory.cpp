@@ -16,7 +16,6 @@ namespace FileSys {
 constexpr char SAVE_DATA_SIZE_FILENAME[] = ".yuzu_save_size";
 
 namespace {
-
 void PrintSaveDataDescriptorWarnings(SaveDataDescriptor meta) {
     if (meta.type == SaveDataType::SystemSaveData || meta.type == SaveDataType::SaveData) {
         if (meta.zero_1 != 0) {
@@ -53,14 +52,6 @@ void PrintSaveDataDescriptorWarnings(SaveDataDescriptor meta) {
                     meta.user_id[1], meta.user_id[0]);
     }
 }
-
-bool ShouldSaveDataBeAutomaticallyCreated(SaveDataSpaceId space, const SaveDataDescriptor& desc) {
-    return desc.type == SaveDataType::CacheStorage || desc.type == SaveDataType::TemporaryStorage ||
-           (space == SaveDataSpaceId::NandUser && ///< Normal Save Data -- Current Title & User
-            (desc.type == SaveDataType::SaveData || desc.type == SaveDataType::DeviceSaveData) &&
-            desc.title_id == 0 && desc.save_id == 0);
-}
-
 } // Anonymous namespace
 
 std::string SaveDataDescriptor::DebugInfo() const {
@@ -91,7 +82,7 @@ ResultVal<VirtualDir> SaveDataFactory::Create(SaveDataSpaceId space,
     // Return an error if the save data doesn't actually exist.
     if (out == nullptr) {
         // TODO(DarkLordZach): Find out correct error code.
-        return RESULT_UNKNOWN;
+        return ResultCode(-1);
     }
 
     return MakeResult<VirtualDir>(std::move(out));
@@ -105,14 +96,10 @@ ResultVal<VirtualDir> SaveDataFactory::Open(SaveDataSpaceId space,
 
     auto out = dir->GetDirectoryRelative(save_directory);
 
-    if (out == nullptr && ShouldSaveDataBeAutomaticallyCreated(space, meta)) {
-        return Create(space, meta);
-    }
-
     // Return an error if the save data doesn't actually exist.
     if (out == nullptr) {
         // TODO(Subv): Find out correct error code.
-        return RESULT_UNKNOWN;
+        return ResultCode(-1);
     }
 
     return MakeResult<VirtualDir>(std::move(out));
@@ -140,11 +127,8 @@ std::string SaveDataFactory::GetFullPath(SaveDataSpaceId space, SaveDataType typ
                                          u128 user_id, u64 save_id) {
     // According to switchbrew, if a save is of type SaveData and the title id field is 0, it should
     // be interpreted as the title id of the current process.
-    if (type == SaveDataType::SaveData || type == SaveDataType::DeviceSaveData) {
-        if (title_id == 0) {
-            title_id = Core::System::GetInstance().CurrentProcess()->GetTitleID();
-        }
-    }
+    if (type == SaveDataType::SaveData && title_id == 0)
+        title_id = Core::CurrentProcess()->GetTitleID();
 
     std::string out = GetSaveDataSpaceIdPath(space);
 

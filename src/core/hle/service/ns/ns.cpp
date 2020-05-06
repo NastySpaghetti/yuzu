@@ -106,14 +106,9 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {96, nullptr, "AcquireApplicationLaunchInfo"},
         {97, nullptr, "GetMainApplicationProgramIndex2"},
         {98, nullptr, "EnableApplicationAllThreadDumpOnCrash"},
-        {99, nullptr, "LaunchDevMenu"},
         {100, nullptr, "ResetToFactorySettings"},
         {101, nullptr, "ResetToFactorySettingsWithoutUserSaveData"},
         {102, nullptr, "ResetToFactorySettingsForRefurbishment"},
-        {103, nullptr, "ResetToFactorySettingsWithPlatformRegion"},
-        {104, nullptr, "ResetToFactorySettingsWithPlatformRegionAuthentication"},
-        {105, nullptr, "RequestResetToFactorySettingsSecurely"},
-        {106, nullptr, "RequestResetToFactorySettingsWithPlatformRegionAuthenticationSecurely"},
         {200, nullptr, "CalculateUserSaveDataStatistics"},
         {201, nullptr, "DeleteUserSaveDataAll"},
         {210, nullptr, "DeleteUserSystemSaveData"},
@@ -135,8 +130,6 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {404, nullptr, "InvalidateApplicationControlCache"},
         {405, nullptr, "ListApplicationControlCacheEntryInfo"},
         {406, nullptr, "GetApplicationControlProperty"},
-        {407, nullptr, "ListApplicationTitle"},
-        {408, nullptr, "ListApplicationIcon"},
         {502, nullptr, "RequestCheckGameCardRegistration"},
         {503, nullptr, "RequestGameCardRegistrationGoldPoint"},
         {504, nullptr, "RequestRegisterGameCard"},
@@ -145,7 +138,6 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {507, nullptr, "EnsureGameCardAccess"},
         {508, nullptr, "GetLastGameCardMountFailureResult"},
         {509, nullptr, "ListApplicationIdOnGameCard"},
-        {510, nullptr, "GetGameCardPlatformRegion"},
         {600, nullptr, "CountApplicationContentMeta"},
         {601, nullptr, "ListApplicationContentMetaStatus"},
         {602, nullptr, "ListAvailableAddOnContent"},
@@ -176,9 +168,6 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {910, nullptr, "HasApplicationRecord"},
         {911, nullptr, "SetPreInstalledApplication"},
         {912, nullptr, "ClearPreInstalledApplicationFlag"},
-        {913, nullptr, "ListAllApplicationRecord"},
-        {914, nullptr, "HideApplicationRecord"},
-        {915, nullptr, "ShowApplicationRecord"},
         {1000, nullptr, "RequestVerifyApplicationDeprecated"},
         {1001, nullptr, "CorruptApplicationForDebug"},
         {1002, nullptr, "RequestVerifyAddOnContentsRights"},
@@ -195,23 +184,18 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {1307, nullptr, "TryDeleteRunningApplicationContentEntities"},
         {1308, nullptr, "DeleteApplicationCompletelyForDebug"},
         {1309, nullptr, "CleanupUnavailableAddOnContents"},
-        {1310, nullptr, "RequestMoveApplicationEntity"},
-        {1311, nullptr, "EstimateSizeToMove"},
-        {1312, nullptr, "HasMovableEntity"},
         {1400, nullptr, "PrepareShutdown"},
         {1500, nullptr, "FormatSdCard"},
         {1501, nullptr, "NeedsSystemUpdateToFormatSdCard"},
         {1502, nullptr, "GetLastSdCardFormatUnexpectedResult"},
         {1504, nullptr, "InsertSdCard"},
         {1505, nullptr, "RemoveSdCard"},
-        {1506, nullptr, "GetSdCardStartupStatus"},
         {1600, nullptr, "GetSystemSeedForPseudoDeviceId"},
         {1601, nullptr, "ResetSystemSeedForPseudoDeviceId"},
         {1700, nullptr, "ListApplicationDownloadingContentMeta"},
         {1701, nullptr, "GetApplicationView"},
         {1702, nullptr, "GetApplicationDownloadTaskStatus"},
         {1703, nullptr, "GetApplicationViewDownloadErrorContext"},
-        {1704, nullptr, "GetApplicationViewWithPromotionInfo"},
         {1800, nullptr, "IsNotificationSetupCompleted"},
         {1801, nullptr, "GetLastNotificationInfoCount"},
         {1802, nullptr, "ListLastNotificationInfo"},
@@ -239,7 +223,6 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {2017, nullptr, "CreateDownloadTask"},
         {2018, nullptr, "GetApplicationDeliveryInfoHash"},
         {2050, nullptr, "GetApplicationRightsOnClient"},
-        {2051, nullptr, "InvalidateRightsIdCache"},
         {2100, nullptr, "GetApplicationTerminateResult"},
         {2101, nullptr, "GetRawApplicationTerminateResult"},
         {2150, nullptr, "CreateRightsEnvironment"},
@@ -247,8 +230,6 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {2152, nullptr, "ActivateRightsEnvironment"},
         {2153, nullptr, "DeactivateRightsEnvironment"},
         {2154, nullptr, "ForceActivateRightsContextForExit"},
-        {2155, nullptr, "UpdateRightsEnvironmentStatus"},
-        {2156, nullptr, "CreateRightsEnvironmentForMicroApplication"},
         {2160, nullptr, "AddTargetApplicationToRightsEnvironment"},
         {2161, nullptr, "SetUsersToRightsEnvironment"},
         {2170, nullptr, "GetRightsEnvironmentStatus"},
@@ -262,24 +243,6 @@ IApplicationManagerInterface::IApplicationManagerInterface()
         {2201, nullptr, "GetInstalledApplicationCopyIdentifier"},
         {2250, nullptr, "RequestReportActiveELicence"},
         {2300, nullptr, "ListEventLog"},
-        {2350, nullptr, "PerformAutoUpdateByApplicationId"},
-        {2351, nullptr, "RequestNoDownloadRightsErrorResolution"},
-        {2352, nullptr, "RequestResolveNoDownloadRightsError"},
-        {2353, nullptr, "GetApplicationDownloadTaskInfo"},
-        {2400, nullptr, "GetPromotionInfo"},
-        {2401, nullptr, "CountPromotionInfo"},
-        {2402, nullptr, "ListPromotionInfo"},
-        {2403, nullptr, "ImportPromotionJsonForDebug"},
-        {2404, nullptr, "ClearPromotionInfoForDebug"},
-        {2500, nullptr, "ConfirmAvailableTime"},
-        {2510, nullptr, "CreateApplicationResource"},
-        {2511, nullptr, "GetApplicationResource"},
-        {2513, nullptr, "LaunchMicroApplication"},
-        {2514, nullptr, "ClearTaskOfAsyncTaskManager"},
-        {2515, nullptr, "CleanupAllPlaceHolderAndFragmentsIfNoTask"},
-        {2516, nullptr, "EnsureApplicationCertificate"},
-        {2800, nullptr, "GetApplicationIdOfPreomia"},
-        {9999, nullptr, "GetApplicationCertificate"},
     };
     // clang-format on
 
@@ -308,7 +271,7 @@ void IApplicationManagerInterface::GetApplicationControlData(Kernel::HLERequestC
                       "output buffer is too small! (actual={:016X}, expected_min=0x4000)", size);
             IPC::ResponseBuilder rb{ctx, 2};
             // TODO(DarkLordZach): Find a better error code for this.
-            rb.Push(RESULT_UNKNOWN);
+            rb.Push(ResultCode(-1));
             return;
         }
 
@@ -328,7 +291,7 @@ void IApplicationManagerInterface::GetApplicationControlData(Kernel::HLERequestC
                       0x4000 + control.second->GetSize());
             IPC::ResponseBuilder rb{ctx, 2};
             // TODO(DarkLordZach): Find a better error code for this.
-            rb.Push(RESULT_UNKNOWN);
+            rb.Push(ResultCode(-1));
             return;
         }
 
@@ -371,15 +334,10 @@ ResultVal<u8> IApplicationManagerInterface::GetApplicationDesiredLanguage(
     // Convert to application language, get priority list
     const auto application_language = ConvertToApplicationLanguage(language_code);
     if (application_language == std::nullopt) {
-        LOG_ERROR(Service_NS, "Could not convert application language! language_code={}",
-                  language_code);
         return ERR_APPLICATION_LANGUAGE_NOT_FOUND;
     }
     const auto priority_list = GetApplicationLanguagePriorityList(*application_language);
     if (!priority_list) {
-        LOG_ERROR(Service_NS,
-                  "Could not find application language priorities! application_language={}",
-                  *application_language);
         return ERR_APPLICATION_LANGUAGE_NOT_FOUND;
     }
 
@@ -391,8 +349,6 @@ ResultVal<u8> IApplicationManagerInterface::GetApplicationDesiredLanguage(
         }
     }
 
-    LOG_ERROR(Service_NS, "Could not find a valid language! supported_languages={:08X}",
-              supported_languages);
     return ERR_APPLICATION_LANGUAGE_NOT_FOUND;
 }
 
@@ -417,7 +373,6 @@ ResultVal<u64> IApplicationManagerInterface::ConvertApplicationLanguageToLanguag
     const auto language_code =
         ConvertToLanguageCode(static_cast<ApplicationLanguage>(application_language));
     if (language_code == std::nullopt) {
-        LOG_ERROR(Service_NS, "Language not found! application_language={}", application_language);
         return ERR_APPLICATION_LANGUAGE_NOT_FOUND;
     }
 
@@ -508,7 +463,6 @@ IECommerceInterface::IECommerceInterface() : ServiceFramework{"IECommerceInterfa
         {3, nullptr, "RequestSyncRights"},
         {4, nullptr, "RequestUnlinkDevice"},
         {5, nullptr, "RequestRevokeAllELicense"},
-        {6, nullptr, "RequestSyncRightsBasedOnAssignedELicenses"},
     };
     // clang-format on
 
@@ -524,10 +478,6 @@ IFactoryResetInterface::IFactoryResetInterface::IFactoryResetInterface()
             {100, nullptr, "ResetToFactorySettings"},
             {101, nullptr, "ResetToFactorySettingsWithoutUserSaveData"},
             {102, nullptr, "ResetToFactorySettingsForRefurbishment"},
-            {103, nullptr, "ResetToFactorySettingsWithPlatformRegion"},
-            {104, nullptr, "ResetToFactorySettingsWithPlatformRegionAuthentication"},
-            {105, nullptr, "RequestResetToFactorySettingsSecurely"},
-            {106, nullptr, "RequestResetToFactorySettingsWithPlatformRegionAuthenticationSecurely"},
         };
     // clang-format on
 
@@ -576,9 +526,6 @@ public:
             {10, nullptr, "TerminateApplication2"},
             {11, nullptr, "GetRunningApplicationProcessId"},
             {12, nullptr, "SetCurrentApplicationRightsEnvironmentCanBeActive"},
-            {13, nullptr, "CreateApplicationResourceForDevelop"},
-            {14, nullptr, "IsPreomiaForDevelop"},
-            {15, nullptr, "GetApplicationProgramIdFromHost"},
         };
         // clang-format on
 

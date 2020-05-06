@@ -215,7 +215,6 @@ public:
             {411, nullptr, "AttachActivateEvent"},
             {412, nullptr, "AttachDeactivateEvent"},
             {500, nullptr, "SetNfcEnabled"},
-            {510, nullptr, "OutputTestWave"},
             {1000, nullptr, "ReadMifare"},
             {1001, nullptr, "WriteMifare"},
             {1300, nullptr, "SendCommandByPassThrough"},

@@ -23,7 +23,7 @@ struct Entry {
     std::chrono::microseconds timestamp;
     Class log_class;
     Level log_level;
-    const char* filename;
+    std::string filename;
     unsigned int line_num;
     std::string function;
     std::string message;

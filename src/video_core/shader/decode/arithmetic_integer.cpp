@@ -35,38 +35,15 @@ u32 ShaderIR::DecodeArithmeticInteger(NodeBlock& bb, u32 pc) {
     case OpCode::Id::IADD_C:
     case OpCode::Id::IADD_R:
     case OpCode::Id::IADD_IMM: {
-        UNIMPLEMENTED_IF_MSG(instr.alu.saturate_d, "IADD.SAT");
-        UNIMPLEMENTED_IF_MSG(instr.iadd.x && instr.generates_cc, "IADD.X Rd.CC");
+        UNIMPLEMENTED_IF_MSG(instr.alu.saturate_d, "IADD saturation not implemented");
 
         op_a = GetOperandAbsNegInteger(op_a, false, instr.alu_integer.negate_a, true);
         op_b = GetOperandAbsNegInteger(op_b, false, instr.alu_integer.negate_b, true);
 
-        Node value = Operation(OperationCode::UAdd, op_a, op_b);
+        const Node value = Operation(OperationCode::IAdd, PRECISE, op_a, op_b);
 
-        if (instr.iadd.x) {
-            Node carry = GetInternalFlag(InternalFlag::Carry);
-            Node x = Operation(OperationCode::Select, std::move(carry), Immediate(1), Immediate(0));
-            value = Operation(OperationCode::UAdd, std::move(value), std::move(x));
-        }
-
-        if (instr.generates_cc) {
-            const Node i0 = Immediate(0);
-
-            Node zero = Operation(OperationCode::LogicalIEqual, value, i0);
-            Node sign = Operation(OperationCode::LogicalILessThan, value, i0);
-            Node carry = Operation(OperationCode::LogicalAddCarry, op_a, op_b);
-
-            Node pos_a = Operation(OperationCode::LogicalIGreaterThan, op_a, i0);
-            Node pos_b = Operation(OperationCode::LogicalIGreaterThan, op_b, i0);
-            Node pos = Operation(OperationCode::LogicalAnd, std::move(pos_a), std::move(pos_b));
-            Node overflow = Operation(OperationCode::LogicalAnd, pos, sign);
-
-            SetInternalFlag(bb, InternalFlag::Zero, std::move(zero));
-            SetInternalFlag(bb, InternalFlag::Sign, std::move(sign));
-            SetInternalFlag(bb, InternalFlag::Carry, std::move(carry));
-            SetInternalFlag(bb, InternalFlag::Overflow, std::move(overflow));
-        }
-        SetRegister(bb, instr.gpr0, std::move(value));
+        SetInternalFlagsFromInteger(bb, value, instr.generates_cc);
+        SetRegister(bb, instr.gpr0, value);
         break;
     }
     case OpCode::Id::IADD3_C:
@@ -153,25 +130,6 @@ u32 ShaderIR::DecodeArithmeticInteger(NodeBlock& bb, u32 pc) {
         SetRegister(bb, instr.gpr0, value);
         break;
     }
-    case OpCode::Id::FLO_R:
-    case OpCode::Id::FLO_C:
-    case OpCode::Id::FLO_IMM: {
-        Node value;
-        if (instr.flo.invert) {
-            op_b = Operation(OperationCode::IBitwiseNot, NO_PRECISE, std::move(op_b));
-        }
-        if (instr.flo.is_signed) {
-            value = Operation(OperationCode::IBitMSB, NO_PRECISE, std::move(op_b));
-        } else {
-            value = Operation(OperationCode::UBitMSB, NO_PRECISE, std::move(op_b));
-        }
-        if (instr.flo.sh) {
-            value =
-                Operation(OperationCode::UBitwiseXor, NO_PRECISE, std::move(value), Immediate(31));
-        }
-        SetRegister(bb, instr.gpr0, std::move(value));
-        break;
-    }
     case OpCode::Id::SEL_C:
     case OpCode::Id::SEL_R:
     case OpCode::Id::SEL_IMM: {
@@ -186,16 +144,16 @@ u32 ShaderIR::DecodeArithmeticInteger(NodeBlock& bb, u32 pc) {
     case OpCode::Id::ICMP_IMM: {
         const Node zero = Immediate(0);
 
-        const auto [op_rhs, test] = [&]() -> std::pair<Node, Node> {
+        const auto [op_b, test] = [&]() -> std::pair<Node, Node> {
             switch (opcode->get().GetId()) {
             case OpCode::Id::ICMP_CR:
-                return {GetConstBuffer(instr.cbuf34.index, instr.cbuf34.GetOffset()),
+                return {GetConstBuffer(instr.cbuf34.index, instr.cbuf34.offset),
                         GetRegister(instr.gpr39)};
             case OpCode::Id::ICMP_R:
                 return {GetRegister(instr.gpr20), GetRegister(instr.gpr39)};
             case OpCode::Id::ICMP_RC:
                 return {GetRegister(instr.gpr39),
-                        GetConstBuffer(instr.cbuf34.index, instr.cbuf34.GetOffset())};
+                        GetConstBuffer(instr.cbuf34.index, instr.cbuf34.offset)};
             case OpCode::Id::ICMP_IMM:
                 return {Immediate(instr.alu.GetSignedImm20_20()), GetRegister(instr.gpr39)};
             default:
@@ -203,10 +161,10 @@ u32 ShaderIR::DecodeArithmeticInteger(NodeBlock& bb, u32 pc) {
                 return {zero, zero};
             }
         }();
-        const Node op_lhs = GetRegister(instr.gpr8);
+        const Node op_a = GetRegister(instr.gpr8);
         const Node comparison =
             GetPredicateComparisonInteger(instr.icmp.cond, instr.icmp.is_signed != 0, test, zero);
-        SetRegister(bb, instr.gpr0, Operation(OperationCode::Select, comparison, op_lhs, op_rhs));
+        SetRegister(bb, instr.gpr0, Operation(OperationCode::Select, comparison, op_a, op_b));
         break;
     }
     case OpCode::Id::LOP_C:
@@ -258,30 +216,34 @@ u32 ShaderIR::DecodeArithmeticInteger(NodeBlock& bb, u32 pc) {
     case OpCode::Id::LEA_IMM:
     case OpCode::Id::LEA_RZ:
     case OpCode::Id::LEA_HI: {
-        auto [op_a, op_b, op_c] = [&]() -> std::tuple<Node, Node, Node> {
+        const auto [op_a, op_b, op_c] = [&]() -> std::tuple<Node, Node, Node> {
             switch (opcode->get().GetId()) {
             case OpCode::Id::LEA_R2: {
                 return {GetRegister(instr.gpr20), GetRegister(instr.gpr39),
                         Immediate(static_cast<u32>(instr.lea.r2.entry_a))};
             }
+
             case OpCode::Id::LEA_R1: {
                 const bool neg = instr.lea.r1.neg != 0;
                 return {GetOperandAbsNegInteger(GetRegister(instr.gpr8), false, neg, true),
                         GetRegister(instr.gpr20),
                         Immediate(static_cast<u32>(instr.lea.r1.entry_a))};
             }
+
             case OpCode::Id::LEA_IMM: {
                 const bool neg = instr.lea.imm.neg != 0;
-                return {GetOperandAbsNegInteger(GetRegister(instr.gpr8), false, neg, true),
-                        Immediate(static_cast<u32>(instr.lea.imm.entry_a)),
+                return {Immediate(static_cast<u32>(instr.lea.imm.entry_a)),
+                        GetOperandAbsNegInteger(GetRegister(instr.gpr8), false, neg, true),
                         Immediate(static_cast<u32>(instr.lea.imm.entry_b))};
             }
+
             case OpCode::Id::LEA_RZ: {
                 const bool neg = instr.lea.rz.neg != 0;
                 return {GetConstBuffer(instr.lea.rz.cb_index, instr.lea.rz.cb_offset),
                         GetOperandAbsNegInteger(GetRegister(instr.gpr8), false, neg, true),
                         Immediate(static_cast<u32>(instr.lea.rz.entry_a))};
             }
+
             case OpCode::Id::LEA_HI:
             default:
                 UNIMPLEMENTED_MSG("Unhandled LEA subinstruction: {}", opcode->get().GetName());
@@ -294,9 +256,12 @@ u32 ShaderIR::DecodeArithmeticInteger(NodeBlock& bb, u32 pc) {
         UNIMPLEMENTED_IF_MSG(instr.lea.pred48 != static_cast<u64>(Pred::UnusedIndex),
                              "Unhandled LEA Predicate");
 
-        Node value = Operation(OperationCode::ILogicalShiftLeft, std::move(op_a), std::move(op_c));
-        value = Operation(OperationCode::IAdd, std::move(op_b), std::move(value));
-        SetRegister(bb, instr.gpr0, std::move(value));
+        const Node shifted_c =
+            Operation(OperationCode::ILogicalShiftLeft, NO_PRECISE, Immediate(1), op_c);
+        const Node mul_bc = Operation(OperationCode::IMul, NO_PRECISE, op_b, shifted_c);
+        const Node value = Operation(OperationCode::IAdd, NO_PRECISE, op_a, mul_bc);
+
+        SetRegister(bb, instr.gpr0, value);
 
         break;
     }
@@ -309,66 +274,44 @@ u32 ShaderIR::DecodeArithmeticInteger(NodeBlock& bb, u32 pc) {
 
 void ShaderIR::WriteLop3Instruction(NodeBlock& bb, Register dest, Node op_a, Node op_b, Node op_c,
                                     Node imm_lut, bool sets_cc) {
-    const Node lop3_fast = [&](const Node na, const Node nb, const Node nc, const Node ttbl) {
-        Node value = Immediate(0);
-        const ImmediateNode imm = std::get<ImmediateNode>(*ttbl);
-        if (imm.GetValue() & 0x01) {
-            const Node a = Operation(OperationCode::IBitwiseNot, na);
-            const Node b = Operation(OperationCode::IBitwiseNot, nb);
-            const Node c = Operation(OperationCode::IBitwiseNot, nc);
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, a, b);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, c);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        if (imm.GetValue() & 0x02) {
-            const Node a = Operation(OperationCode::IBitwiseNot, na);
-            const Node b = Operation(OperationCode::IBitwiseNot, nb);
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, a, b);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, nc);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        if (imm.GetValue() & 0x04) {
-            const Node a = Operation(OperationCode::IBitwiseNot, na);
-            const Node c = Operation(OperationCode::IBitwiseNot, nc);
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, a, nb);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, c);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        if (imm.GetValue() & 0x08) {
-            const Node a = Operation(OperationCode::IBitwiseNot, na);
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, a, nb);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, nc);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        if (imm.GetValue() & 0x10) {
-            const Node b = Operation(OperationCode::IBitwiseNot, nb);
-            const Node c = Operation(OperationCode::IBitwiseNot, nc);
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, na, b);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, c);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        if (imm.GetValue() & 0x20) {
-            const Node b = Operation(OperationCode::IBitwiseNot, nb);
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, na, b);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, nc);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        if (imm.GetValue() & 0x40) {
-            const Node c = Operation(OperationCode::IBitwiseNot, nc);
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, na, nb);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, c);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        if (imm.GetValue() & 0x80) {
-            Node r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, na, nb);
-            r = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, r, nc);
-            value = Operation(OperationCode::IBitwiseOr, value, r);
-        }
-        return value;
-    }(op_a, op_b, op_c, imm_lut);
+    constexpr u32 lop_iterations = 32;
+    const Node one = Immediate(1);
+    const Node two = Immediate(2);
 
-    SetInternalFlagsFromInteger(bb, lop3_fast, sets_cc);
-    SetRegister(bb, dest, lop3_fast);
+    Node value{};
+    for (u32 i = 0; i < lop_iterations; ++i) {
+        const Node shift_amount = Immediate(i);
+
+        const Node a = Operation(OperationCode::ILogicalShiftRight, NO_PRECISE, op_c, shift_amount);
+        const Node pack_0 = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, a, one);
+
+        const Node b = Operation(OperationCode::ILogicalShiftRight, NO_PRECISE, op_b, shift_amount);
+        const Node c = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, b, one);
+        const Node pack_1 = Operation(OperationCode::ILogicalShiftLeft, NO_PRECISE, c, one);
+
+        const Node d = Operation(OperationCode::ILogicalShiftRight, NO_PRECISE, op_a, shift_amount);
+        const Node e = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, d, one);
+        const Node pack_2 = Operation(OperationCode::ILogicalShiftLeft, NO_PRECISE, e, two);
+
+        const Node pack_01 = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, pack_0, pack_1);
+        const Node pack_012 = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, pack_01, pack_2);
+
+        const Node shifted_bit =
+            Operation(OperationCode::ILogicalShiftRight, NO_PRECISE, imm_lut, pack_012);
+        const Node bit = Operation(OperationCode::IBitwiseAnd, NO_PRECISE, shifted_bit, one);
+
+        const Node right =
+            Operation(OperationCode::ILogicalShiftLeft, NO_PRECISE, bit, shift_amount);
+
+        if (i > 0) {
+            value = Operation(OperationCode::IBitwiseOr, NO_PRECISE, value, right);
+        } else {
+            value = right;
+        }
+    }
+
+    SetInternalFlagsFromInteger(bb, value, sets_cc);
+    SetRegister(bb, dest, value);
 }
 
 } // namespace VideoCommon::Shader

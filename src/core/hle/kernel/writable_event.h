@@ -4,8 +4,6 @@
 
 #pragma once
 
-#include <memory>
-
 #include "core/hle/kernel/object.h"
 
 namespace Kernel {
@@ -15,8 +13,8 @@ class ReadableEvent;
 class WritableEvent;
 
 struct EventPair {
-    std::shared_ptr<ReadableEvent> readable;
-    std::shared_ptr<WritableEvent> writable;
+    SharedPtr<ReadableEvent> readable;
+    SharedPtr<WritableEvent> writable;
 };
 
 class WritableEvent final : public Object {
@@ -26,9 +24,11 @@ public:
     /**
      * Creates an event
      * @param kernel The kernel instance to create this event under.
+     * @param reset_type ResetType describing how to create event
      * @param name Optional name of event
      */
-    static EventPair CreateEventPair(KernelCore& kernel, std::string name = "Unknown");
+    static EventPair CreateEventPair(KernelCore& kernel, ResetType reset_type,
+                                     std::string name = "Unknown");
 
     std::string GetTypeName() const override {
         return "WritableEvent";
@@ -42,7 +42,9 @@ public:
         return HANDLE_TYPE;
     }
 
-    std::shared_ptr<ReadableEvent> GetReadableEvent() const;
+    SharedPtr<ReadableEvent> GetReadableEvent() const;
+
+    ResetType GetResetType() const;
 
     void Signal();
     void Clear();
@@ -51,7 +53,7 @@ public:
 private:
     explicit WritableEvent(KernelCore& kernel);
 
-    std::shared_ptr<ReadableEvent> readable;
+    SharedPtr<ReadableEvent> readable;
 
     std::string name; ///< Name of event (optional)
 };

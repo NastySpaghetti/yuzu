@@ -5,7 +5,6 @@
 #pragma once
 
 #include <array>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -19,10 +18,6 @@
 
 union ResultCode;
 
-namespace Core::Memory {
-class Memory;
-}
-
 namespace Service {
 class ServiceFrameworkBase;
 }
@@ -32,7 +27,6 @@ namespace Kernel {
 class Domain;
 class HandleTable;
 class HLERequestContext;
-class KernelCore;
 class Process;
 class ServerSession;
 class Thread;
@@ -66,20 +60,20 @@ public:
      * associated ServerSession alive for the duration of the connection.
      * @param server_session Owning pointer to the ServerSession associated with the connection.
      */
-    void ClientConnected(std::shared_ptr<ServerSession> server_session);
+    void ClientConnected(SharedPtr<ServerSession> server_session);
 
     /**
      * Signals that a client has just disconnected from this HLE handler and releases the
      * associated ServerSession.
      * @param server_session ServerSession associated with the connection.
      */
-    void ClientDisconnected(const std::shared_ptr<ServerSession>& server_session);
+    void ClientDisconnected(const SharedPtr<ServerSession>& server_session);
 
 protected:
     /// List of sessions that are connected to this handler.
     /// A ServerSession whose server endpoint is an HLE implementation is kept alive by this list
     /// for the duration of the connection.
-    std::vector<std::shared_ptr<ServerSession>> connected_sessions;
+    std::vector<SharedPtr<ServerSession>> connected_sessions;
 };
 
 /**
@@ -103,9 +97,7 @@ protected:
  */
 class HLERequestContext {
 public:
-    explicit HLERequestContext(KernelCore& kernel, Core::Memory::Memory& memory,
-                               std::shared_ptr<ServerSession> session,
-                               std::shared_ptr<Thread> thread);
+    explicit HLERequestContext(SharedPtr<ServerSession> session, SharedPtr<Thread> thread);
     ~HLERequestContext();
 
     /// Returns a pointer to the IPC command buffer for this request.
@@ -117,12 +109,12 @@ public:
      * Returns the session through which this request was made. This can be used as a map key to
      * access per-client data on services.
      */
-    const std::shared_ptr<Kernel::ServerSession>& Session() const {
+    const SharedPtr<Kernel::ServerSession>& Session() const {
         return server_session;
     }
 
-    using WakeupCallback = std::function<void(
-        std::shared_ptr<Thread> thread, HLERequestContext& context, ThreadWakeupReason reason)>;
+    using WakeupCallback = std::function<void(SharedPtr<Thread> thread, HLERequestContext& context,
+                                              ThreadWakeupReason reason)>;
 
     /**
      * Puts the specified guest thread to sleep until the returned event is signaled or until the
@@ -137,9 +129,9 @@ public:
      * created.
      * @returns Event that when signaled will resume the thread and call the callback function.
      */
-    std::shared_ptr<WritableEvent> SleepClientThread(
-        const std::string& reason, u64 timeout, WakeupCallback&& callback,
-        std::shared_ptr<WritableEvent> writable_event = nullptr);
+    SharedPtr<WritableEvent> SleepClientThread(const std::string& reason, u64 timeout,
+                                               WakeupCallback&& callback,
+                                               SharedPtr<WritableEvent> writable_event = nullptr);
 
     /// Populates this context with data from the requesting process/thread.
     ResultCode PopulateFromIncomingCommandBuffer(const HandleTable& handle_table,
@@ -185,11 +177,10 @@ public:
     }
 
     /// Helper function to read a buffer using the appropriate buffer descriptor
-    std::vector<u8> ReadBuffer(std::size_t buffer_index = 0) const;
+    std::vector<u8> ReadBuffer(int buffer_index = 0) const;
 
     /// Helper function to write a buffer using the appropriate buffer descriptor
-    std::size_t WriteBuffer(const void* buffer, std::size_t size,
-                            std::size_t buffer_index = 0) const;
+    std::size_t WriteBuffer(const void* buffer, std::size_t size, int buffer_index = 0) const;
 
     /* Helper function to write a buffer using the appropriate buffer descriptor
      *
@@ -201,8 +192,7 @@ public:
      */
     template <typename ContiguousContainer,
               typename = std::enable_if_t<!std::is_pointer_v<ContiguousContainer>>>
-    std::size_t WriteBuffer(const ContiguousContainer& container,
-                            std::size_t buffer_index = 0) const {
+    std::size_t WriteBuffer(const ContiguousContainer& container, int buffer_index = 0) const {
         using ContiguousType = typename ContiguousContainer::value_type;
 
         static_assert(std::is_trivially_copyable_v<ContiguousType>,
@@ -213,26 +203,26 @@ public:
     }
 
     /// Helper function to get the size of the input buffer
-    std::size_t GetReadBufferSize(std::size_t buffer_index = 0) const;
+    std::size_t GetReadBufferSize(int buffer_index = 0) const;
 
     /// Helper function to get the size of the output buffer
-    std::size_t GetWriteBufferSize(std::size_t buffer_index = 0) const;
+    std::size_t GetWriteBufferSize(int buffer_index = 0) const;
 
     template <typename T>
-    std::shared_ptr<T> GetCopyObject(std::size_t index) {
+    SharedPtr<T> GetCopyObject(std::size_t index) {
         return DynamicObjectCast<T>(copy_objects.at(index));
     }
 
     template <typename T>
-    std::shared_ptr<T> GetMoveObject(std::size_t index) {
+    SharedPtr<T> GetMoveObject(std::size_t index) {
         return DynamicObjectCast<T>(move_objects.at(index));
     }
 
-    void AddMoveObject(std::shared_ptr<Object> object) {
+    void AddMoveObject(SharedPtr<Object> object) {
         move_objects.emplace_back(std::move(object));
     }
 
-    void AddCopyObject(std::shared_ptr<Object> object) {
+    void AddCopyObject(SharedPtr<Object> object) {
         copy_objects.emplace_back(std::move(object));
     }
 
@@ -272,27 +262,15 @@ public:
 
     std::string Description() const;
 
-    Thread& GetThread() {
-        return *thread;
-    }
-
-    const Thread& GetThread() const {
-        return *thread;
-    }
-
-    bool IsThreadWaiting() const {
-        return is_thread_waiting;
-    }
-
 private:
     void ParseCommandBuffer(const HandleTable& handle_table, u32_le* src_cmdbuf, bool incoming);
 
     std::array<u32, IPC::COMMAND_BUFFER_LENGTH> cmd_buf;
-    std::shared_ptr<Kernel::ServerSession> server_session;
-    std::shared_ptr<Thread> thread;
+    SharedPtr<Kernel::ServerSession> server_session;
+    SharedPtr<Thread> thread;
     // TODO(yuriks): Check common usage of this and optimize size accordingly
-    boost::container::small_vector<std::shared_ptr<Object>, 8> move_objects;
-    boost::container::small_vector<std::shared_ptr<Object>, 8> copy_objects;
+    boost::container::small_vector<SharedPtr<Object>, 8> move_objects;
+    boost::container::small_vector<SharedPtr<Object>, 8> copy_objects;
     boost::container::small_vector<std::shared_ptr<SessionRequestHandler>, 8> domain_objects;
 
     std::optional<IPC::CommandHeader> command_header;
@@ -310,10 +288,6 @@ private:
     u32_le command{};
 
     std::vector<std::shared_ptr<SessionRequestHandler>> domain_request_handlers;
-    bool is_thread_waiting{};
-
-    KernelCore& kernel;
-    Core::Memory::Memory& memory;
 };
 
 } // namespace Kernel

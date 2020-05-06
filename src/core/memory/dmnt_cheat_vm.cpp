@@ -27,7 +27,7 @@
 #include "core/memory/dmnt_cheat_types.h"
 #include "core/memory/dmnt_cheat_vm.h"
 
-namespace Core::Memory {
+namespace Memory {
 
 DmntCheatVm::DmntCheatVm(std::unique_ptr<Callbacks> callbacks) : callbacks(std::move(callbacks)) {}
 
@@ -55,7 +55,7 @@ void DmntCheatVm::LogOpcode(const CheatVmOpcode& opcode) {
             fmt::format("Cond Type: {:X}", static_cast<u32>(begin_cond->cond_type)));
         callbacks->CommandLog(fmt::format("Rel Addr:  {:X}", begin_cond->rel_address));
         callbacks->CommandLog(fmt::format("Value:     {:X}", begin_cond->value.bit64));
-    } else if (std::holds_alternative<EndConditionalOpcode>(opcode.opcode)) {
+    } else if (auto end_cond = std::get_if<EndConditionalOpcode>(&opcode.opcode)) {
         callbacks->CommandLog("Opcode: End Conditional");
     } else if (auto ctrl_loop = std::get_if<ControlLoopOpcode>(&opcode.opcode)) {
         if (ctrl_loop->start_loop) {
@@ -399,7 +399,6 @@ bool DmntCheatVm::DecodeNextOpcode(CheatVmOpcode& out) {
         // 8kkkkkkk
         // Just parse the mask.
         begin_keypress_cond.key_mask = first_dword & 0x0FFFFFFF;
-        opcode.opcode = begin_keypress_cond;
     } break;
     case CheatVmOpcodeType::PerformArithmeticRegister: {
         PerformArithmeticRegisterOpcode perform_math_reg{};
@@ -780,7 +779,7 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             if (!cond_met) {
                 SkipConditionalBlock();
             }
-        } else if (std::holds_alternative<EndConditionalOpcode>(cur_opcode.opcode)) {
+        } else if (auto end_cond = std::get_if<EndConditionalOpcode>(&cur_opcode.opcode)) {
             // Decrement the condition depth.
             // We will assume, graciously, that mismatched conditional block ends are a nop.
             if (condition_depth > 0) {
@@ -1134,8 +1133,8 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
             case SaveRestoreRegisterOpType::ClearRegs:
             case SaveRestoreRegisterOpType::Restore:
             default:
-                src = saved_values.data();
-                dst = registers.data();
+                src = registers.data();
+                dst = saved_values.data();
                 break;
             }
             for (std::size_t i = 0; i < NumRegisters; i++) {
@@ -1210,4 +1209,4 @@ void DmntCheatVm::Execute(const CheatProcessMetadata& metadata) {
     }
 }
 
-} // namespace Core::Memory
+} // namespace Memory

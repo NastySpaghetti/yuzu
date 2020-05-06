@@ -10,13 +10,13 @@
 
 namespace Service::BCAT {
 
-ProgressServiceBackend::ProgressServiceBackend(Kernel::KernelCore& kernel,
-                                               std::string_view event_name) {
+ProgressServiceBackend::ProgressServiceBackend(std::string event_name) : impl{} {
+    auto& kernel{Core::System::GetInstance().Kernel()};
     event = Kernel::WritableEvent::CreateEventPair(
-        kernel, std::string("ProgressServiceBackend:UpdateEvent:").append(event_name));
+        kernel, Kernel::ResetType::Automatic, "ProgressServiceBackend:UpdateEvent:" + event_name);
 }
 
-std::shared_ptr<Kernel::ReadableEvent> ProgressServiceBackend::GetEvent() const {
+Kernel::SharedPtr<Kernel::ReadableEvent> ProgressServiceBackend::GetEvent() {
     return event.readable;
 }
 
@@ -95,7 +95,7 @@ Backend::Backend(DirectoryGetter getter) : dir_getter(std::move(getter)) {}
 
 Backend::~Backend() = default;
 
-NullBackend::NullBackend(DirectoryGetter getter) : Backend(std::move(getter)) {}
+NullBackend::NullBackend(const DirectoryGetter& getter) : Backend(std::move(getter)) {}
 
 NullBackend::~NullBackend() = default;
 
@@ -117,13 +117,13 @@ bool NullBackend::SynchronizeDirectory(TitleIDVersion title, std::string name,
 }
 
 bool NullBackend::Clear(u64 title_id) {
-    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}", title_id);
+    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}");
 
     return true;
 }
 
 void NullBackend::SetPassphrase(u64 title_id, const Passphrase& passphrase) {
-    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, passphrase={}", title_id,
+    LOG_DEBUG(Service_BCAT, "called, title_id={:016X}, passphrase = {}", title_id,
               Common::HexToString(passphrase));
 }
 

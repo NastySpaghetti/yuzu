@@ -36,15 +36,15 @@ add_executable(yuzu
     configuration/configure_filesystem.cpp
     configuration/configure_filesystem.h
     configuration/configure_filesystem.ui
+    configuration/configure_gamelist.cpp
+    configuration/configure_gamelist.h
+    configuration/configure_gamelist.ui
     configuration/configure_general.cpp
     configuration/configure_general.h
     configuration/configure_general.ui
     configuration/configure_graphics.cpp
     configuration/configure_graphics.h
     configuration/configure_graphics.ui
-    configuration/configure_graphics_advanced.cpp
-    configuration/configure_graphics_advanced.h
-    configuration/configure_graphics_advanced.ui
     configuration/configure_hotkeys.cpp
     configuration/configure_hotkeys.h
     configuration/configure_hotkeys.ui
@@ -75,12 +75,14 @@ add_executable(yuzu
     configuration/configure_touchscreen_advanced.cpp
     configuration/configure_touchscreen_advanced.h
     configuration/configure_touchscreen_advanced.ui
-    configuration/configure_ui.cpp
-    configuration/configure_ui.h
-    configuration/configure_ui.ui
     configuration/configure_web.cpp
     configuration/configure_web.h
     configuration/configure_web.ui
+    debugger/graphics/graphics_breakpoint_observer.cpp
+    debugger/graphics/graphics_breakpoint_observer.h
+    debugger/graphics/graphics_breakpoints.cpp
+    debugger/graphics/graphics_breakpoints.h
+    debugger/graphics/graphics_breakpoints_p.h
     debugger/console.cpp
     debugger/console.h
     debugger/profiler.cpp
@@ -93,19 +95,14 @@ add_executable(yuzu
     game_list_p.h
     game_list_worker.cpp
     game_list_worker.h
-    hotkeys.cpp
-    hotkeys.h
-    install_dialog.cpp
-    install_dialog.h
     loading_screen.cpp
     loading_screen.h
     loading_screen.ui
+    hotkeys.cpp
+    hotkeys.h
     main.cpp
     main.h
     main.ui
-    status/system_archive.cpp
-    status/system_archive.h
-    status/system_archive.ui
     uisettings.cpp
     uisettings.h
     util/limitable_input_dialog.cpp
@@ -154,10 +151,6 @@ create_target_directory_groups(yuzu)
 target_link_libraries(yuzu PRIVATE common core input_common video_core)
 target_link_libraries(yuzu PRIVATE Boost::boost glad Qt5::OpenGL Qt5::Widgets)
 target_link_libraries(yuzu PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
-
-if (ENABLE_VULKAN AND NOT WIN32)
-    target_include_directories(yuzu PRIVATE ${Qt5Gui_PRIVATE_INCLUDE_DIRS})
-endif()
 
 target_compile_definitions(yuzu PRIVATE
     # Use QStringBuilder for string concatenation to reduce
@@ -211,9 +204,4 @@ if (MSVC)
     copy_yuzu_Qt5_deps(yuzu)
     copy_yuzu_SDL_deps(yuzu)
     copy_yuzu_unicorn_deps(yuzu)
-endif()
-
-if (ENABLE_VULKAN)
-    target_include_directories(yuzu PRIVATE ../../externals/Vulkan-Headers/include)
-    target_compile_definitions(yuzu PRIVATE HAS_VULKAN)
 endif()

@@ -21,7 +21,6 @@
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/savedata_factory.h"
-#include "core/file_sys/system_archive/importer.h"
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/file_sys/vfs.h"
 #include "core/hle/ipc_helpers.h"
@@ -257,8 +256,8 @@ public:
 
         // TODO(DarkLordZach): Verify that this is the correct behavior.
         // Build entry index now to save time later.
-        BuildEntryIndex(entries, backend->GetFiles(), FileSys::EntryType::File);
-        BuildEntryIndex(entries, backend->GetSubdirectories(), FileSys::EntryType::Directory);
+        BuildEntryIndex(entries, backend->GetFiles(), FileSys::File);
+        BuildEntryIndex(entries, backend->GetSubdirectories(), FileSys::Directory);
     }
 
 private:
@@ -317,8 +316,8 @@ public:
             {8, &IFileSystem::OpenFile, "OpenFile"},
             {9, &IFileSystem::OpenDirectory, "OpenDirectory"},
             {10, &IFileSystem::Commit, "Commit"},
-            {11, &IFileSystem::GetFreeSpaceSize, "GetFreeSpaceSize"},
-            {12, &IFileSystem::GetTotalSpaceSize, "GetTotalSpaceSize"},
+            {11, nullptr, "GetFreeSpaceSize"},
+            {12, nullptr, "GetTotalSpaceSize"},
             {13, &IFileSystem::CleanDirectoryRecursively, "CleanDirectoryRecursively"},
             {14, nullptr, "GetFileTimeStampRaw"},
             {15, nullptr, "QueryEntry"},
@@ -392,10 +391,13 @@ public:
     }
 
     void RenameFile(Kernel::HLERequestContext& ctx) {
-        std::vector<u8> buffer = ctx.ReadBuffer(0);
+        std::vector<u8> buffer;
+        buffer.resize(ctx.BufferDescriptorX()[0].Size());
+        Memory::ReadBlock(ctx.BufferDescriptorX()[0].Address(), buffer.data(), buffer.size());
         const std::string src_name = Common::StringFromBuffer(buffer);
 
-        buffer = ctx.ReadBuffer(1);
+        buffer.resize(ctx.BufferDescriptorX()[1].Size());
+        Memory::ReadBlock(ctx.BufferDescriptorX()[1].Address(), buffer.data(), buffer.size());
         const std::string dst_name = Common::StringFromBuffer(buffer);
 
         LOG_DEBUG(Service_FS, "called. file '{}' to file '{}'", src_name, dst_name);
@@ -421,7 +423,7 @@ public:
             return;
         }
 
-        auto file = std::make_shared<IFile>(result.Unwrap());
+        IFile file(result.Unwrap());
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(RESULT_SUCCESS);
@@ -446,7 +448,7 @@ public:
             return;
         }
 
-        auto directory = std::make_shared<IDirectory>(result.Unwrap());
+        IDirectory directory(result.Unwrap());
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(RESULT_SUCCESS);
@@ -576,7 +578,6 @@ private:
                                 0,
                                 user_id->GetSize(),
                                 {},
-                                {},
                             });
 
                             continue;
@@ -596,7 +597,6 @@ private:
                                 save_id_numeric,
                                 stoull_be(title_id->GetName()),
                                 title_id->GetSize(),
-                                {},
                                 {},
                             });
                         }
@@ -621,7 +621,6 @@ private:
                                 stoull_be(type->GetName()),
                                 stoull_be(title_id->GetName()),
                                 title_id->GetSize(),
-                                {},
                                 {},
                             });
                         }
@@ -681,7 +680,6 @@ FSP_SRV::FSP_SRV(FileSystemController& fsc, const Core::Reporter& reporter)
         {33, nullptr, "DeleteCacheStorage"},
         {34, nullptr, "GetCacheStorageSize"},
         {35, nullptr, "CreateSaveDataFileSystemByHashSalt"},
-        {36, nullptr, "OpenHostFileSystemWithOption"},
         {51, &FSP_SRV::OpenSaveDataFileSystem, "OpenSaveDataFileSystem"},
         {52, nullptr, "OpenSaveDataFileSystemBySystemSaveDataId"},
         {53, &FSP_SRV::OpenReadOnlySaveDataFileSystem, "OpenReadOnlySaveDataFileSystem"},
@@ -696,16 +694,11 @@ FSP_SRV::FSP_SRV(FileSystemController& fsc, const Core::Reporter& reporter)
         {66, nullptr, "WriteSaveDataFileSystemExtraData2"},
         {67, nullptr, "FindSaveDataWithFilter"},
         {68, nullptr, "OpenSaveDataInfoReaderBySaveDataFilter"},
-        {69, nullptr, "ReadSaveDataFileSystemExtraDataBySaveDataAttribute"},
-        {70, nullptr, "WriteSaveDataFileSystemExtraDataBySaveDataAttribute"},
-        {71, nullptr, "ReadSaveDataFileSystemExtraDataWithMaskBySaveDataAttribute"},
         {80, nullptr, "OpenSaveDataMetaFile"},
         {81, nullptr, "OpenSaveDataTransferManager"},
         {82, nullptr, "OpenSaveDataTransferManagerVersion2"},
         {83, nullptr, "OpenSaveDataTransferProhibiterForCloudBackUp"},
         {84, nullptr, "ListApplicationAccessibleSaveDataOwnerId"},
-        {85, nullptr, "OpenSaveDataTransferManagerForSaveDataRepair"},
-        {86, nullptr, "OpenSaveDataMover"},
         {100, nullptr, "OpenImageDirectoryFileSystem"},
         {110, nullptr, "OpenContentStorageFileSystem"},
         {120, nullptr, "OpenCloudBackupWorkStorageFileSystem"},
@@ -763,13 +756,9 @@ FSP_SRV::FSP_SRV(FileSystemController& fsc, const Core::Reporter& reporter)
         {1009, nullptr, "GetAndClearMemoryReportInfo"},
         {1010, nullptr, "SetDataStorageRedirectTarget"},
         {1011, &FSP_SRV::GetAccessLogVersionInfo, "GetAccessLogVersionInfo"},
-        {1012, nullptr, "GetFsStackUsage"},
-        {1013, nullptr, "UnsetSaveDataRootPath"},
-        {1014, nullptr, "OutputMultiProgramTagAccessLog"},
         {1100, nullptr, "OverrideSaveDataTransferTokenSignVerificationKey"},
         {1110, nullptr, "CorruptSaveDataFileSystemBySaveDataSpaceId2"},
-        {1200, &FSP_SRV::OpenMultiCommitManager, "OpenMultiCommitManager"},
-        {1300, nullptr, "OpenBisWiper"},
+        {1200, nullptr, "OpenMultiCommitManager"},
     };
     // clang-format on
     RegisterHandlers(functions);
@@ -796,14 +785,14 @@ void FSP_SRV::OpenFileSystemWithPatch(Kernel::HLERequestContext& ctx) {
                 static_cast<u8>(type), title_id);
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 0};
-    rb.Push(RESULT_UNKNOWN);
+    rb.Push(ResultCode(-1));
 }
 
 void FSP_SRV::OpenSdCardFileSystem(Kernel::HLERequestContext& ctx) {
     LOG_DEBUG(Service_FS, "called");
 
-    auto filesystem = std::make_shared<IFileSystem>(
-        fsc.OpenSDMC().Unwrap(), SizeGetter::FromStorageId(fsc, FileSys::StorageId::SdCard));
+    IFileSystem filesystem(fsc.OpenSDMC().Unwrap(),
+                           SizeGetter::FromStorageId(fsc, FileSys::StorageId::SdCard));
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
@@ -814,7 +803,7 @@ void FSP_SRV::CreateSaveDataFileSystem(Kernel::HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
 
     auto save_struct = rp.PopRaw<FileSys::SaveDataDescriptor>();
-    [[maybe_unused]] auto save_create_struct = rp.PopRaw<std::array<u8, 0x40>>();
+    auto save_create_struct = rp.PopRaw<std::array<u8, 0x40>>();
     u128 uid = rp.PopRaw<u128>();
 
     LOG_DEBUG(Service_FS, "called save_struct = {}, uid = {:016X}{:016X}", save_struct.DebugInfo(),
@@ -854,8 +843,7 @@ void FSP_SRV::OpenSaveDataFileSystem(Kernel::HLERequestContext& ctx) {
         id = FileSys::StorageId::NandSystem;
     }
 
-    auto filesystem =
-        std::make_shared<IFileSystem>(std::move(dir.Unwrap()), SizeGetter::FromStorageId(fsc, id));
+    IFileSystem filesystem(std::move(dir.Unwrap()), SizeGetter::FromStorageId(fsc, id));
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
@@ -903,11 +891,11 @@ void FSP_SRV::OpenDataStorageByCurrentProcess(Kernel::HLERequestContext& ctx) {
         // TODO (bunnei): Find the right error code to use here
         LOG_CRITICAL(Service_FS, "no file system interface available!");
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_UNKNOWN);
+        rb.Push(ResultCode(-1));
         return;
     }
 
-    auto storage = std::make_shared<IStorage>(std::move(romfs.Unwrap()));
+    IStorage storage(std::move(romfs.Unwrap()));
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
@@ -926,12 +914,7 @@ void FSP_SRV::OpenDataStorageByDataId(Kernel::HLERequestContext& ctx) {
     auto data = fsc.OpenRomFS(title_id, storage_id, FileSys::ContentRecordType::Data);
 
     if (data.Failed()) {
-        auto archive = FileSys::SystemArchive::GetImportedSystemArchive(
-            fsc.GetSystemNANDContentDirectory(), title_id);
-
-        if (archive == nullptr) {
-            archive = FileSys::SystemArchive::SynthesizeSystemArchive(title_id);
-        }
+        const auto archive = FileSys::SystemArchive::SynthesizeSystemArchive(title_id);
 
         if (archive != nullptr) {
             IPC::ResponseBuilder rb{ctx, 2, 0, 1};
@@ -945,14 +928,13 @@ void FSP_SRV::OpenDataStorageByDataId(Kernel::HLERequestContext& ctx) {
                   "could not open data storage with title_id={:016X}, storage_id={:02X}", title_id,
                   static_cast<u8>(storage_id));
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_UNKNOWN);
+        rb.Push(ResultCode(-1));
         return;
     }
 
     FileSys::PatchManager pm{title_id};
 
-    auto storage = std::make_shared<IStorage>(
-        pm.PatchRomFS(std::move(data.Unwrap()), 0, FileSys::ContentRecordType::Data));
+    IStorage storage(pm.PatchRomFS(std::move(data.Unwrap()), 0, FileSys::ContentRecordType::Data));
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
@@ -992,42 +974,6 @@ void FSP_SRV::GetAccessLogVersionInfo(Kernel::HLERequestContext& ctx) {
     rb.Push(RESULT_SUCCESS);
     rb.PushEnum(AccessLogVersion::Latest);
     rb.Push(access_log_program_index);
-}
-
-class IMultiCommitManager final : public ServiceFramework<IMultiCommitManager> {
-public:
-    explicit IMultiCommitManager() : ServiceFramework("IMultiCommitManager") {
-        static const FunctionInfo functions[] = {
-            {1, &IMultiCommitManager::Add, "Add"},
-            {2, &IMultiCommitManager::Commit, "Commit"},
-        };
-        RegisterHandlers(functions);
-    }
-
-private:
-    FileSys::VirtualFile backend;
-
-    void Add(Kernel::HLERequestContext& ctx) {
-        LOG_WARNING(Service_FS, "(STUBBED) called");
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-
-    void Commit(Kernel::HLERequestContext& ctx) {
-        LOG_WARNING(Service_FS, "(STUBBED) called");
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
-    }
-};
-
-void FSP_SRV::OpenMultiCommitManager(Kernel::HLERequestContext& ctx) {
-    LOG_DEBUG(Service_FS, "called");
-
-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-    rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface<IMultiCommitManager>(std::make_shared<IMultiCommitManager>());
 }
 
 } // namespace Service::FileSystem

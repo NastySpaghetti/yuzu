@@ -8,35 +8,39 @@
 #include "core/hle/kernel/hle_ipc.h"
 #include "core/hle/kernel/object.h"
 #include "core/hle/kernel/server_port.h"
-#include "core/hle/kernel/session.h"
+#include "core/hle/kernel/server_session.h"
 
 namespace Kernel {
 
 ClientPort::ClientPort(KernelCore& kernel) : Object{kernel} {}
 ClientPort::~ClientPort() = default;
 
-std::shared_ptr<ServerPort> ClientPort::GetServerPort() const {
+SharedPtr<ServerPort> ClientPort::GetServerPort() const {
     return server_port;
 }
 
-ResultVal<std::shared_ptr<ClientSession>> ClientPort::Connect() {
+ResultVal<SharedPtr<ClientSession>> ClientPort::Connect() {
+    // Note: Threads do not wait for the server endpoint to call
+    // AcceptSession before returning from this call.
+
     if (active_sessions >= max_sessions) {
         return ERR_MAX_CONNECTIONS_REACHED;
     }
     active_sessions++;
 
-    auto [client, server] = Kernel::Session::Create(kernel, name);
+    // Create a new session pair, let the created sessions inherit the parent port's HLE handler.
+    auto [server, client] = ServerSession::CreateSessionPair(kernel, server_port->GetName(), this);
 
     if (server_port->HasHLEHandler()) {
-        server_port->GetHLEHandler()->ClientConnected(std::move(server));
+        server_port->GetHLEHandler()->ClientConnected(server);
     } else {
-        server_port->AppendPendingSession(std::move(server));
+        server_port->AppendPendingSession(server);
     }
 
     // Wake the threads waiting on the ServerPort
     server_port->WakeupAllWaitingThreads();
 
-    return MakeResult(std::move(client));
+    return MakeResult(client);
 }
 
 void ClientPort::ConnectionClosed() {

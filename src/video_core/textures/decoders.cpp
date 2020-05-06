@@ -11,7 +11,6 @@
 #include "video_core/textures/texture.h"
 
 namespace Tegra::Texture {
-namespace {
 
 /**
  * This table represents the internal swizzle of a gob,
@@ -174,8 +173,6 @@ void SwizzledData(u8* const swizzled_data, u8* const unswizzled_data, const bool
         }
     }
 }
-
-} // Anonymous namespace
 
 void CopySwizzledData(u32 width, u32 height, u32 depth, u32 bytes_per_pixel,
                       u32 out_bytes_per_pixel, u8* const swizzled_data, u8* const unswizzled_data,

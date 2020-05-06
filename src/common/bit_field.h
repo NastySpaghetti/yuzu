@@ -36,13 +36,6 @@
 #include "common/common_funcs.h"
 #include "common/swap.h"
 
-// Inlining
-#ifdef _WIN32
-#define FORCE_INLINE __forceinline
-#else
-#define FORCE_INLINE inline __attribute__((always_inline))
-#endif
-
 /*
  * Abstract bitfield class
  *
@@ -175,12 +168,12 @@ public:
     constexpr BitField(BitField&&) noexcept = default;
     constexpr BitField& operator=(BitField&&) noexcept = default;
 
-    constexpr operator T() const {
+    constexpr FORCE_INLINE operator T() const {
         return Value();
     }
 
-    constexpr void Assign(const T& value) {
-        storage = static_cast<StorageType>((storage & ~mask) | FormatValue(value));
+    constexpr FORCE_INLINE void Assign(const T& value) {
+        storage = (static_cast<StorageType>(storage) & ~mask) | FormatValue(value);
     }
 
     constexpr T Value() const {

@@ -27,7 +27,7 @@ VirtualDir ExtractZIP(VirtualFile file) {
 
     std::shared_ptr<VectorVfsDirectory> out = std::make_shared<VectorVfsDirectory>();
 
-    const auto num_entries = static_cast<std::size_t>(zip_get_num_entries(zip.get(), 0));
+    const auto num_entries = zip_get_num_entries(zip.get(), 0);
 
     zip_stat_t stat{};
     zip_stat_init(&stat);
@@ -42,11 +42,11 @@ VirtualDir ExtractZIP(VirtualFile file) {
             continue;
 
         if (name.back() != '/') {
-            std::unique_ptr<zip_file_t, decltype(&zip_fclose)> file2{
+            std::unique_ptr<zip_file_t, decltype(&zip_fclose)> file{
                 zip_fopen_index(zip.get(), i, 0), zip_fclose};
 
             std::vector<u8> buf(stat.size);
-            if (zip_fread(file2.get(), buf.data(), buf.size()) != s64(buf.size()))
+            if (zip_fread(file.get(), buf.data(), buf.size()) != buf.size())
                 return nullptr;
 
             const auto parts = FileUtil::SplitPathComponents(stat.name);

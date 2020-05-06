@@ -48,7 +48,7 @@
          <string>General</string>
         </attribute>
        </widget>
-       <widget class="ConfigureUi" name="uiTab">
+       <widget class="ConfigureGameList" name="gameListTab">
         <attribute name="title">
          <string>Game List</string>
         </attribute>
@@ -81,11 +81,6 @@
        <widget class="ConfigureGraphics" name="graphicsTab">
         <attribute name="title">
          <string>Graphics</string>
-        </attribute>
-       </widget>
-       <widget class="ConfigureGraphicsAdvanced" name="graphicsAdvancedTab">
-        <attribute name="title">
-         <string>GraphicsAdvanced</string>
         </attribute>
        </widget>
        <widget class="ConfigureAudio" name="audioTab">
@@ -165,21 +160,15 @@
    <container>1</container>
   </customwidget>
   <customwidget>
-   <class>ConfigureGraphicsAdvanced</class>
-   <extends>QWidget</extends>
-   <header>configuration/configure_graphics_advanced.h</header>
-   <container>1</container>
-  </customwidget>
-  <customwidget>
    <class>ConfigureWeb</class>
    <extends>QWidget</extends>
    <header>configuration/configure_web.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>
-   <class>ConfigureUi</class>
+   <class>ConfigureGameList</class>
    <extends>QWidget</extends>
-   <header>configuration/configure_ui.h</header>
+   <header>configuration/configure_gamelist.h</header>
    <container>1</container>
   </customwidget>
   <customwidget>

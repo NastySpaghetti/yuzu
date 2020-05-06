@@ -93,6 +93,7 @@ void Config::ReadValues() {
 
     // System
     Settings::values.use_docked_mode = sdl2_config->GetBoolean("System", "use_docked_mode", false);
+    const auto size = sdl2_config->GetInteger("System", "users_size", 0);
 
     Settings::values.current_user = std::clamp<int>(
         sdl2_config->GetInteger("System", "current_user", 0), 0, Service::Account::MAX_USERS - 1);
@@ -118,20 +119,14 @@ void Config::ReadValues() {
     // Renderer
     Settings::values.resolution_factor =
         static_cast<float>(sdl2_config->GetReal("Renderer", "resolution_factor", 1.0));
-    Settings::values.aspect_ratio =
-        static_cast<int>(sdl2_config->GetInteger("Renderer", "aspect_ratio", 0));
-    Settings::values.max_anisotropy =
-        static_cast<int>(sdl2_config->GetInteger("Renderer", "max_anisotropy", 0));
     Settings::values.use_frame_limit = false;
     Settings::values.frame_limit = 100;
     Settings::values.use_disk_shader_cache =
         sdl2_config->GetBoolean("Renderer", "use_disk_shader_cache", false);
-    const int gpu_accuracy_level = sdl2_config->GetInteger("Renderer", "gpu_accuracy", 0);
-    Settings::values.gpu_accuracy = static_cast<Settings::GPUAccuracy>(gpu_accuracy_level);
+    Settings::values.use_accurate_gpu_emulation =
+        sdl2_config->GetBoolean("Renderer", "use_accurate_gpu_emulation", false);
     Settings::values.use_asynchronous_gpu_emulation =
         sdl2_config->GetBoolean("Renderer", "use_asynchronous_gpu_emulation", false);
-    Settings::values.use_fast_gpu_time =
-        sdl2_config->GetBoolean("Renderer", "use_fast_gpu_time", true);
 
     Settings::values.bg_red = static_cast<float>(sdl2_config->GetReal("Renderer", "bg_red", 0.0));
     Settings::values.bg_green =
@@ -176,6 +171,8 @@ void Config::ReadValues() {
     // Web Service
     Settings::values.enable_telemetry =
         sdl2_config->GetBoolean("WebService", "enable_telemetry", true);
+    Settings::values.web_api_url =
+        sdl2_config->Get("WebService", "web_api_url", "https://api.yuzu-emu.org");
     Settings::values.yuzu_username = sdl2_config->Get("WebService", "yuzu_username", "");
     Settings::values.yuzu_token = sdl2_config->Get("WebService", "yuzu_token", "");
 }

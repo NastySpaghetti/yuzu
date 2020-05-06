@@ -1,4 +1,4 @@
-// Copyright 2019 yuzu emulator team
+// Copyright 2014 Citra Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -9,22 +9,17 @@
 #include <utility>
 #include <vector>
 
-#include "common/threadsafe_queue.h"
-#include "core/hle/kernel/synchronization_object.h"
+#include "core/hle/kernel/object.h"
+#include "core/hle/kernel/wait_object.h"
 #include "core/hle/result.h"
-
-namespace Core::Memory {
-class Memory;
-}
-
-namespace Core::Timing {
-struct EventType;
-}
 
 namespace Kernel {
 
+class ClientPort;
+class ClientSession;
 class HLERequestContext;
 class KernelCore;
+class ServerSession;
 class Session;
 class SessionRequestHandler;
 class Thread;
@@ -41,17 +36,8 @@ class Thread;
  * After the server replies to the request, the response is marshalled back to the caller's
  * TLS buffer and control is transferred back to it.
  */
-class ServerSession final : public SynchronizationObject {
+class ServerSession final : public WaitObject {
 public:
-    explicit ServerSession(KernelCore& kernel);
-    ~ServerSession() override;
-
-    friend class Session;
-
-    static ResultVal<std::shared_ptr<ServerSession>> Create(KernelCore& kernel,
-                                                            std::shared_ptr<Session> parent,
-                                                            std::string name = "Unknown");
-
     std::string GetTypeName() const override {
         return "ServerSession";
     }
@@ -73,7 +59,17 @@ public:
         return parent.get();
     }
 
-    bool IsSignaled() const override;
+    using SessionPair = std::pair<SharedPtr<ServerSession>, SharedPtr<ClientSession>>;
+
+    /**
+     * Creates a pair of ServerSession and an associated ClientSession.
+     * @param kernel      The kernal instance to create the session pair under.
+     * @param name        Optional name of the ports.
+     * @param client_port Optional The ClientPort that spawned this session.
+     * @return The created session tuple
+     */
+    static SessionPair CreateSessionPair(KernelCore& kernel, const std::string& name = "Unknown",
+                                         SharedPtr<ClientPort> client_port = nullptr);
 
     /**
      * Sets the HLE handler for the session. This handler will be called to service IPC requests
@@ -86,13 +82,10 @@ public:
 
     /**
      * Handle a sync request from the emulated application.
-     *
      * @param thread Thread that initiated the request.
-     * @param memory Memory context to handle the sync request under.
-     *
      * @returns ResultCode from the operation.
      */
-    ResultCode HandleSyncRequest(std::shared_ptr<Thread> thread, Core::Memory::Memory& memory);
+    ResultCode HandleSyncRequest(SharedPtr<Thread> thread);
 
     bool ShouldWait(const Thread* thread) const override;
 
@@ -125,11 +118,18 @@ public:
     }
 
 private:
-    /// Queues a sync request from the emulated application.
-    ResultCode QueueSyncRequest(std::shared_ptr<Thread> thread, Core::Memory::Memory& memory);
+    explicit ServerSession(KernelCore& kernel);
+    ~ServerSession() override;
 
-    /// Completes a sync request from the emulated application.
-    ResultCode CompleteSyncRequest();
+    /**
+     * Creates a server session. The server session can have an optional HLE handler,
+     * which will be invoked to handle the IPC requests that this session receives.
+     * @param kernel The kernel instance to create this server session under.
+     * @param name Optional name of the server session.
+     * @return The created server session
+     */
+    static ResultVal<SharedPtr<ServerSession>> Create(KernelCore& kernel,
+                                                      std::string name = "Unknown");
 
     /// Handles a SyncRequest to a domain, forwarding the request to the proper object or closing an
     /// object handle.
@@ -147,24 +147,18 @@ private:
     /// List of threads that are pending a response after a sync request. This list is processed in
     /// a LIFO manner, thus, the last request will be dispatched first.
     /// TODO(Subv): Verify if this is indeed processed in LIFO using a hardware test.
-    std::vector<std::shared_ptr<Thread>> pending_requesting_threads;
+    std::vector<SharedPtr<Thread>> pending_requesting_threads;
 
     /// Thread whose request is currently being handled. A request is considered "handled" when a
     /// response is sent via svcReplyAndReceive.
     /// TODO(Subv): Find a better name for this.
-    std::shared_ptr<Thread> currently_handling;
+    SharedPtr<Thread> currently_handling;
 
     /// When set to True, converts the session to a domain at the end of the command
     bool convert_to_domain{};
 
     /// The name of this session (optional)
     std::string name;
-
-    /// Core timing event used to schedule the service request at some point in the future
-    std::shared_ptr<Core::Timing::EventType> request_event;
-
-    /// Queue of scheduled service requests
-    Common::MPSCQueue<std::shared_ptr<Kernel::HLERequestContext>> request_queue;
 };
 
 } // namespace Kernel

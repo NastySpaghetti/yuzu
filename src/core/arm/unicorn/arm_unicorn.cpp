@@ -9,9 +9,7 @@
 #include "core/arm/unicorn/arm_unicorn.h"
 #include "core/core.h"
 #include "core/core_timing.h"
-#include "core/hle/kernel/scheduler.h"
 #include "core/hle/kernel/svc.h"
-#include "core/memory.h"
 
 namespace Core {
 
@@ -54,7 +52,7 @@ static bool UnmappedMemoryHook(uc_engine* uc, uc_mem_type type, u64 addr, int si
                                void* user_data) {
     auto* const system = static_cast<System*>(user_data);
 
-    ARM_Interface::ThreadContext64 ctx{};
+    ARM_Interface::ThreadContext ctx{};
     system->CurrentArmInterface().SaveContext(ctx);
     ASSERT_MSG(false, "Attempted to read from unmapped memory: 0x{:X}, pc=0x{:X}, lr=0x{:X}", addr,
                ctx.pc, ctx.cpu_registers[30]);
@@ -62,19 +60,17 @@ static bool UnmappedMemoryHook(uc_engine* uc, uc_mem_type type, u64 addr, int si
     return false;
 }
 
-ARM_Unicorn::ARM_Unicorn(System& system, Arch architecture) : ARM_Interface{system} {
-    const auto arch = architecture == Arch::AArch32 ? UC_ARCH_ARM : UC_ARCH_ARM64;
-    CHECKED(uc_open(arch, UC_MODE_ARM, &uc));
+ARM_Unicorn::ARM_Unicorn(System& system) : system{system} {
+    CHECKED(uc_open(UC_ARCH_ARM64, UC_MODE_ARM, &uc));
 
     auto fpv = 3 << 20;
     CHECKED(uc_reg_write(uc, UC_ARM64_REG_CPACR_EL1, &fpv));
 
     uc_hook hook{};
-    CHECKED(uc_hook_add(uc, &hook, UC_HOOK_INTR, (void*)InterruptHook, this, 0, UINT64_MAX));
-    CHECKED(uc_hook_add(uc, &hook, UC_HOOK_MEM_INVALID, (void*)UnmappedMemoryHook, &system, 0,
-                        UINT64_MAX));
+    CHECKED(uc_hook_add(uc, &hook, UC_HOOK_INTR, (void*)InterruptHook, this, 0, -1));
+    CHECKED(uc_hook_add(uc, &hook, UC_HOOK_MEM_INVALID, (void*)UnmappedMemoryHook, &system, 0, -1));
     if (GDBStub::IsServerEnabled()) {
-        CHECKED(uc_hook_add(uc, &hook, UC_HOOK_CODE, (void*)CodeHook, this, 0, UINT64_MAX));
+        CHECKED(uc_hook_add(uc, &hook, UC_HOOK_CODE, (void*)CodeHook, this, 0, -1));
         last_bkpt_hit = false;
     }
 }
@@ -158,10 +154,9 @@ void ARM_Unicorn::SetTPIDR_EL0(u64 value) {
 
 void ARM_Unicorn::Run() {
     if (GDBStub::IsServerEnabled()) {
-        ExecuteInstructions(std::max(4000000U, 0U));
+        ExecuteInstructions(std::max(4000000, 0));
     } else {
-        ExecuteInstructions(
-            std::max(std::size_t(system.CoreTiming().GetDowncount()), std::size_t{0}));
+        ExecuteInstructions(std::max(system.CoreTiming().GetDowncount(), 0));
     }
 }
 
@@ -171,27 +166,17 @@ void ARM_Unicorn::Step() {
 
 MICROPROFILE_DEFINE(ARM_Jit_Unicorn, "ARM JIT", "Unicorn", MP_RGB(255, 64, 64));
 
-void ARM_Unicorn::ExecuteInstructions(std::size_t num_instructions) {
+void ARM_Unicorn::ExecuteInstructions(int num_instructions) {
     MICROPROFILE_SCOPE(ARM_Jit_Unicorn);
-
-    // Temporarily map the code page for Unicorn
-    u64 map_addr{GetPC() & ~Memory::PAGE_MASK};
-    std::vector<u8> page_buffer(Memory::PAGE_SIZE);
-    system.Memory().ReadBlock(map_addr, page_buffer.data(), page_buffer.size());
-
-    CHECKED(uc_mem_map_ptr(uc, map_addr, page_buffer.size(),
-                           UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC, page_buffer.data()));
     CHECKED(uc_emu_start(uc, GetPC(), 1ULL << 63, 0, num_instructions));
-    CHECKED(uc_mem_unmap(uc, map_addr, page_buffer.size()));
-
     system.CoreTiming().AddTicks(num_instructions);
     if (GDBStub::IsServerEnabled()) {
         if (last_bkpt_hit && last_bkpt.type == GDBStub::BreakpointType::Execute) {
             uc_reg_write(uc, UC_ARM64_REG_PC, &last_bkpt.address);
         }
 
-        Kernel::Thread* const thread = system.CurrentScheduler().GetCurrentThread();
-        SaveContext(thread->GetContext64());
+        Kernel::Thread* thread = Kernel::GetCurrentThread();
+        SaveContext(thread->GetContext());
         if (last_bkpt_hit || GDBStub::IsMemoryBreak() || GDBStub::GetCpuStepFlag()) {
             last_bkpt_hit = false;
             GDBStub::Break();
@@ -200,7 +185,7 @@ void ARM_Unicorn::ExecuteInstructions(std::size_t num_instructions) {
     }
 }
 
-void ARM_Unicorn::SaveContext(ThreadContext64& ctx) {
+void ARM_Unicorn::SaveContext(ThreadContext& ctx) {
     int uregs[32];
     void* tregs[32];
 
@@ -227,7 +212,7 @@ void ARM_Unicorn::SaveContext(ThreadContext64& ctx) {
     CHECKED(uc_reg_read_batch(uc, uregs, tregs, 32));
 }
 
-void ARM_Unicorn::LoadContext(const ThreadContext64& ctx) {
+void ARM_Unicorn::LoadContext(const ThreadContext& ctx) {
     int uregs[32];
     void* tregs[32];
 
@@ -278,7 +263,7 @@ void ARM_Unicorn::InterruptHook(uc_engine* uc, u32 int_no, void* user_data) {
 
     switch (ec) {
     case 0x15: // SVC
-        Kernel::Svc::Call(arm_instance->system, iss);
+        Kernel::CallSVC(arm_instance->system, iss);
         break;
     }
 }

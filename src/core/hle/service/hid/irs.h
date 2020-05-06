@@ -37,7 +37,7 @@ private:
     void RunIrLedProcessor(Kernel::HLERequestContext& ctx);
     void StopImageProcessorAsync(Kernel::HLERequestContext& ctx);
     void ActivateIrsensorWithFunctionLevel(Kernel::HLERequestContext& ctx);
-    std::shared_ptr<Kernel::SharedMemory> shared_mem;
+    Kernel::SharedPtr<Kernel::SharedMemory> shared_mem;
     const u32 device_handle{0xABCD};
     Core::System& system;
 };

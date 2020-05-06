@@ -9,31 +9,29 @@
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/core_timing_util.h"
-#include "core/hardware_properties.h"
-#include "core/hle/kernel/memory/page_table.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/service/hid/controllers/npad.h"
 #include "core/hle/service/hid/hid.h"
 #include "core/hle/service/sm/sm.h"
-#include "core/memory.h"
 #include "core/memory/cheat_engine.h"
 
-namespace Core::Memory {
+namespace Memory {
 
-constexpr s64 CHEAT_ENGINE_TICKS = static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 12);
+constexpr s64 CHEAT_ENGINE_TICKS = static_cast<s64>(Core::Timing::BASE_CLOCK_RATE / 12);
 constexpr u32 KEYPAD_BITMASK = 0x3FFFFFF;
 
-StandardVmCallbacks::StandardVmCallbacks(Core::System& system, const CheatProcessMetadata& metadata)
-    : metadata(metadata), system(system) {}
+StandardVmCallbacks::StandardVmCallbacks(const Core::System& system,
+                                         const CheatProcessMetadata& metadata)
+    : system(system), metadata(metadata) {}
 
 StandardVmCallbacks::~StandardVmCallbacks() = default;
 
 void StandardVmCallbacks::MemoryRead(VAddr address, void* data, u64 size) {
-    system.Memory().ReadBlock(SanitizeAddress(address), data, size);
+    ReadBlock(SanitizeAddress(address), data, size);
 }
 
 void StandardVmCallbacks::MemoryWrite(VAddr address, const void* data, u64 size) {
-    system.Memory().WriteBlock(SanitizeAddress(address), data, size);
+    WriteBlock(SanitizeAddress(address), data, size);
 }
 
 u64 StandardVmCallbacks::HidKeysDown() {
@@ -178,8 +176,9 @@ std::vector<CheatEntry> TextCheatParser::Parse(const Core::System& system,
 
 CheatEngine::CheatEngine(Core::System& system, std::vector<CheatEntry> cheats,
                          const std::array<u8, 0x20>& build_id)
-    : vm{std::make_unique<StandardVmCallbacks>(system, metadata)},
-      cheats(std::move(cheats)), core_timing{system.CoreTiming()}, system{system} {
+    : system{system}, core_timing{system.CoreTiming()}, vm{std::make_unique<StandardVmCallbacks>(
+                                                            system, metadata)},
+      cheats(std::move(cheats)) {
     metadata.main_nso_build_id = build_id;
 }
 
@@ -188,7 +187,7 @@ CheatEngine::~CheatEngine() {
 }
 
 void CheatEngine::Initialize() {
-    event = Core::Timing::CreateEvent(
+    event = core_timing.RegisterEvent(
         "CheatEngine::FrameCallback::" + Common::HexToString(metadata.main_nso_build_id),
         [this](u64 userdata, s64 cycles_late) { FrameCallback(userdata, cycles_late); });
     core_timing.ScheduleEvent(CHEAT_ENGINE_TICKS, event);
@@ -196,12 +195,11 @@ void CheatEngine::Initialize() {
     metadata.process_id = system.CurrentProcess()->GetProcessID();
     metadata.title_id = system.CurrentProcess()->GetTitleID();
 
-    const auto& page_table = system.CurrentProcess()->PageTable();
-    metadata.heap_extents = {page_table.GetHeapRegionStart(), page_table.GetHeapRegionSize()};
-    metadata.address_space_extents = {page_table.GetAddressSpaceStart(),
-                                      page_table.GetAddressSpaceSize()};
-    metadata.alias_extents = {page_table.GetAliasCodeRegionStart(),
-                              page_table.GetAliasCodeRegionSize()};
+    const auto& vm_manager = system.CurrentProcess()->VMManager();
+    metadata.heap_extents = {vm_manager.GetHeapRegionBaseAddress(), vm_manager.GetHeapRegionSize()};
+    metadata.address_space_extents = {vm_manager.GetAddressSpaceBaseAddress(),
+                                      vm_manager.GetAddressSpaceSize()};
+    metadata.alias_extents = {vm_manager.GetMapRegionBaseAddress(), vm_manager.GetMapRegionSize()};
 
     is_pending_reload.exchange(true);
 }
@@ -233,4 +231,4 @@ void CheatEngine::FrameCallback(u64 userdata, s64 cycles_late) {
     core_timing.ScheduleEvent(CHEAT_ENGINE_TICKS - cycles_late, event);
 }
 
-} // namespace Core::Memory
+} // namespace Memory

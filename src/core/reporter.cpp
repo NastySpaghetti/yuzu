@@ -7,7 +7,6 @@
 
 #include <fmt/chrono.h>
 #include <fmt/format.h>
-#include <fmt/ostream.h>
 #include <json.hpp>
 
 #include "common/file_util.h"
@@ -16,11 +15,8 @@
 #include "core/arm/arm_interface.h"
 #include "core/core.h"
 #include "core/hle/kernel/hle_ipc.h"
-#include "core/hle/kernel/memory/page_table.h"
 #include "core/hle/kernel/process.h"
 #include "core/hle/result.h"
-#include "core/hle/service/lm/manager.h"
-#include "core/memory.h"
 #include "core/reporter.h"
 #include "core/settings.h"
 
@@ -110,13 +106,14 @@ json GetProcessorStateData(const std::string& architecture, u64 entry_point, u64
 
 json GetProcessorStateDataAuto(Core::System& system) {
     const auto* process{system.CurrentProcess()};
+    const auto& vm_manager{process->VMManager()};
     auto& arm{system.CurrentArmInterface()};
 
-    Core::ARM_Interface::ThreadContext64 context{};
+    Core::ARM_Interface::ThreadContext context{};
     arm.SaveContext(context);
 
     return GetProcessorStateData(process->Is64BitProcess() ? "AArch64" : "AArch32",
-                                 process->PageTable().GetCodeRegionStart(), context.sp, context.pc,
+                                 vm_manager.GetCodeRegionBaseAddress(), context.sp, context.pc,
                                  context.pstate, context.cpu_registers);
 }
 
@@ -148,8 +145,7 @@ json GetFullDataAuto(const std::string& timestamp, u64 title_id, Core::System& s
 }
 
 template <bool read_value, typename DescriptorType>
-json GetHLEBufferDescriptorData(const std::vector<DescriptorType>& buffer,
-                                Core::Memory::Memory& memory) {
+json GetHLEBufferDescriptorData(const std::vector<DescriptorType>& buffer) {
     auto buffer_out = json::array();
     for (const auto& desc : buffer) {
         auto entry = json{
@@ -159,7 +155,7 @@ json GetHLEBufferDescriptorData(const std::vector<DescriptorType>& buffer,
 
         if constexpr (read_value) {
             std::vector<u8> data(desc.Size());
-            memory.ReadBlock(desc.Address(), data.data(), desc.Size());
+            Memory::ReadBlock(desc.Address(), data.data(), desc.Size());
             entry["data"] = Common::HexToString(data);
         }
 
@@ -169,7 +165,7 @@ json GetHLEBufferDescriptorData(const std::vector<DescriptorType>& buffer,
     return buffer_out;
 }
 
-json GetHLERequestContextData(Kernel::HLERequestContext& ctx, Core::Memory::Memory& memory) {
+json GetHLERequestContextData(Kernel::HLERequestContext& ctx) {
     json out;
 
     auto cmd_buf = json::array();
@@ -179,10 +175,10 @@ json GetHLERequestContextData(Kernel::HLERequestContext& ctx, Core::Memory::Memo
 
     out["command_buffer"] = std::move(cmd_buf);
 
-    out["buffer_descriptor_a"] = GetHLEBufferDescriptorData<true>(ctx.BufferDescriptorA(), memory);
-    out["buffer_descriptor_b"] = GetHLEBufferDescriptorData<false>(ctx.BufferDescriptorB(), memory);
-    out["buffer_descriptor_c"] = GetHLEBufferDescriptorData<false>(ctx.BufferDescriptorC(), memory);
-    out["buffer_descriptor_x"] = GetHLEBufferDescriptorData<true>(ctx.BufferDescriptorX(), memory);
+    out["buffer_descriptor_a"] = GetHLEBufferDescriptorData<true>(ctx.BufferDescriptorA());
+    out["buffer_descriptor_b"] = GetHLEBufferDescriptorData<false>(ctx.BufferDescriptorB());
+    out["buffer_descriptor_c"] = GetHLEBufferDescriptorData<false>(ctx.BufferDescriptorC());
+    out["buffer_descriptor_x"] = GetHLEBufferDescriptorData<true>(ctx.BufferDescriptorX());
 
     return out;
 }
@@ -261,7 +257,7 @@ void Reporter::SaveUnimplementedFunctionReport(Kernel::HLERequestContext& ctx, u
     const auto title_id = system.CurrentProcess()->GetTitleID();
     auto out = GetFullDataAuto(timestamp, title_id, system);
 
-    auto function_out = GetHLERequestContextData(ctx, system.Memory());
+    auto function_out = GetHLERequestContextData(ctx);
     function_out["command_id"] = command_id;
     function_out["function_name"] = name;
     function_out["service_name"] = service_name;
@@ -356,55 +352,6 @@ void Reporter::SaveErrorReport(u64 title_id, ResultCode result,
     };
 
     SaveToFile(std::move(out), GetPath("error_report", title_id, timestamp));
-}
-
-void Reporter::SaveLogReport(u32 destination, std::vector<Service::LM::LogMessage> messages) const {
-    if (!IsReportingEnabled()) {
-        return;
-    }
-
-    const auto timestamp = GetTimestamp();
-    json out;
-
-    out["yuzu_version"] = GetYuzuVersionData();
-    out["report_common"] =
-        GetReportCommonData(system.CurrentProcess()->GetTitleID(), RESULT_SUCCESS, timestamp);
-
-    out["log_destination"] =
-        fmt::format("{}", static_cast<Service::LM::DestinationFlag>(destination));
-
-    auto json_messages = json::array();
-    std::transform(messages.begin(), messages.end(), std::back_inserter(json_messages),
-                   [](const Service::LM::LogMessage& message) {
-                       json out;
-                       out["is_head"] = fmt::format("{}", message.header.IsHeadLog());
-                       out["is_tail"] = fmt::format("{}", message.header.IsTailLog());
-                       out["pid"] = fmt::format("{:016X}", message.header.pid);
-                       out["thread_context"] =
-                           fmt::format("{:016X}", message.header.thread_context);
-                       out["payload_size"] = fmt::format("{:016X}", message.header.payload_size);
-                       out["flags"] = fmt::format("{:04X}", message.header.flags.Value());
-                       out["severity"] = fmt::format("{}", message.header.severity.Value());
-                       out["verbosity"] = fmt::format("{:02X}", message.header.verbosity);
-
-                       auto fields = json::array();
-                       std::transform(message.fields.begin(), message.fields.end(),
-                                      std::back_inserter(fields), [](const auto& kv) {
-                                          json out;
-                                          out["type"] = fmt::format("{}", kv.first);
-                                          out["data"] =
-                                              Service::LM::FormatField(kv.first, kv.second);
-                                          return out;
-                                      });
-
-                       out["fields"] = std::move(fields);
-                       return out;
-                   });
-
-    out["log_messages"] = std::move(json_messages);
-
-    SaveToFile(std::move(out),
-               GetPath("log_report", system.CurrentProcess()->GetTitleID(), timestamp));
 }
 
 void Reporter::SaveFilesystemAccessReport(Service::FileSystem::LogMode log_mode,

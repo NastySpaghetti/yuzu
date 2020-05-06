@@ -6,22 +6,11 @@
 
 #include <functional>
 #include <optional>
-#include <string>
-#include <string_view>
-
 #include "common/common_types.h"
 #include "core/file_sys/vfs_types.h"
 #include "core/hle/kernel/readable_event.h"
 #include "core/hle/kernel/writable_event.h"
 #include "core/hle/result.h"
-
-namespace Core {
-class System;
-}
-
-namespace Kernel {
-class KernelCore;
-}
 
 namespace Service::BCAT {
 
@@ -96,14 +85,14 @@ public:
     void FinishDownload(ResultCode result);
 
 private:
-    explicit ProgressServiceBackend(Kernel::KernelCore& kernel, std::string_view event_name);
+    explicit ProgressServiceBackend(std::string event_name);
 
-    std::shared_ptr<Kernel::ReadableEvent> GetEvent() const;
+    Kernel::SharedPtr<Kernel::ReadableEvent> GetEvent();
     DeliveryCacheProgressImpl& GetImpl();
 
     void SignalUpdate() const;
 
-    DeliveryCacheProgressImpl impl{};
+    DeliveryCacheProgressImpl impl;
     Kernel::EventPair event;
     bool need_hle_lock = false;
 };
@@ -139,7 +128,7 @@ protected:
 // A backend of BCAT that provides no operation.
 class NullBackend : public Backend {
 public:
-    explicit NullBackend(DirectoryGetter getter);
+    explicit NullBackend(const DirectoryGetter& getter);
     ~NullBackend() override;
 
     bool Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) override;
@@ -153,6 +142,6 @@ public:
     std::optional<std::vector<u8>> GetLaunchParameter(TitleIDVersion title) override;
 };
 
-std::unique_ptr<Backend> CreateBackendFromSettings(Core::System& system, DirectoryGetter getter);
+std::unique_ptr<Backend> CreateBackendFromSettings(DirectoryGetter getter);
 
 } // namespace Service::BCAT

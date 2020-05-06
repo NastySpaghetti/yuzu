@@ -6,16 +6,12 @@
 
 #include "core/hle/service/bcat/module.h"
 
-namespace Core {
-class System;
-}
-
 namespace Service::BCAT {
 
 class BCAT final : public Module::Interface {
 public:
-    explicit BCAT(Core::System& system, std::shared_ptr<Module> module,
-                  FileSystem::FileSystemController& fsc, const char* name);
+    explicit BCAT(std::shared_ptr<Module> module, FileSystem::FileSystemController& fsc,
+                  const char* name);
     ~BCAT() override;
 };
 

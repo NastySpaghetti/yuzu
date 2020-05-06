@@ -3,25 +3,14 @@
 // Refer to the license.txt file included.
 
 #include <QColorDialog>
-#include <QComboBox>
-#ifdef HAS_VULKAN
-#include <QVulkanInstance>
-#endif
-
-#include "common/common_types.h"
-#include "common/logging/log.h"
 #include "core/core.h"
 #include "core/settings.h"
 #include "ui_configure_graphics.h"
 #include "yuzu/configuration/configure_graphics.h"
 
-#ifdef HAS_VULKAN
-#include "video_core/renderer_vulkan/renderer_vulkan.h"
-#endif
-
 namespace {
 enum class Resolution : int {
-    Auto,
+    Scanner,
     Scale1x,
     Scale2x,
     Scale3x,
@@ -30,8 +19,8 @@ enum class Resolution : int {
 
 float ToResolutionFactor(Resolution option) {
     switch (option) {
-    case Resolution::Auto:
-        return 0.f;
+    case Resolution::Scanner:
+        return 1.f;
     case Resolution::Scale1x:
         return 1.f;
     case Resolution::Scale2x:
@@ -41,12 +30,12 @@ float ToResolutionFactor(Resolution option) {
     case Resolution::Scale4x:
         return 4.f;
     }
-    return 0.f;
+    return 1.f;
 }
 
-Resolution FromResolutionFactor(float factor) {
-    if (factor == 0.f) {
-        return Resolution::Auto;
+Resolution FromResolutionFactor(float factor, bool scanner_on) {
+    if (scanner_on) {
+        return Resolution::Scanner;
     } else if (factor == 1.f) {
         return Resolution::Scale1x;
     } else if (factor == 2.f) {
@@ -56,23 +45,15 @@ Resolution FromResolutionFactor(float factor) {
     } else if (factor == 4.f) {
         return Resolution::Scale4x;
     }
-    return Resolution::Auto;
+    return Resolution::Scale1x;
 }
 } // Anonymous namespace
 
 ConfigureGraphics::ConfigureGraphics(QWidget* parent)
     : QWidget(parent), ui(new Ui::ConfigureGraphics) {
-    vulkan_device = Settings::values.vulkan_device;
-    RetrieveVulkanDevices();
-
     ui->setupUi(this);
 
     SetConfiguration();
-
-    connect(ui->api, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this,
-            [this] { UpdateDeviceComboBox(); });
-    connect(ui->device, static_cast<void (QComboBox::*)(int)>(&QComboBox::activated), this,
-            [this](int device) { UpdateDeviceSelection(device); });
 
     connect(ui->bg_button, &QPushButton::clicked, this, [this] {
         const QColor new_bg_color = QColorDialog::getColor(bg_color);
@@ -83,43 +64,34 @@ ConfigureGraphics::ConfigureGraphics(QWidget* parent)
     });
 }
 
-void ConfigureGraphics::UpdateDeviceSelection(int device) {
-    if (device == -1) {
-        return;
-    }
-    if (GetCurrentGraphicsBackend() == Settings::RendererBackend::Vulkan) {
-        vulkan_device = device;
-    }
-}
-
 ConfigureGraphics::~ConfigureGraphics() = default;
 
 void ConfigureGraphics::SetConfiguration() {
     const bool runtime_lock = !Core::System::GetInstance().IsPoweredOn();
 
-    ui->api->setEnabled(runtime_lock);
-    ui->api->setCurrentIndex(static_cast<int>(Settings::values.renderer_backend));
-    ui->resolution_factor_combobox->setCurrentIndex(
-        static_cast<int>(FromResolutionFactor(Settings::values.resolution_factor)));
-    ui->aspect_ratio_combobox->setCurrentIndex(Settings::values.aspect_ratio);
+    ui->resolution_factor_combobox->setEnabled(runtime_lock);
+    ui->resolution_factor_combobox->setCurrentIndex(static_cast<int>(FromResolutionFactor(
+        Settings::values.resolution_factor, Settings::values.use_resolution_scanner)));
     ui->use_disk_shader_cache->setEnabled(runtime_lock);
     ui->use_disk_shader_cache->setChecked(Settings::values.use_disk_shader_cache);
+    ui->use_accurate_gpu_emulation->setChecked(Settings::values.use_accurate_gpu_emulation);
     ui->use_asynchronous_gpu_emulation->setEnabled(runtime_lock);
     ui->use_asynchronous_gpu_emulation->setChecked(Settings::values.use_asynchronous_gpu_emulation);
+    ui->force_30fps_mode->setEnabled(runtime_lock);
+    ui->force_30fps_mode->setChecked(Settings::values.force_30fps_mode);
     UpdateBackgroundColorButton(QColor::fromRgbF(Settings::values.bg_red, Settings::values.bg_green,
                                                  Settings::values.bg_blue));
-    UpdateDeviceComboBox();
 }
 
 void ConfigureGraphics::ApplyConfiguration() {
-    Settings::values.renderer_backend = GetCurrentGraphicsBackend();
-    Settings::values.vulkan_device = vulkan_device;
-    Settings::values.resolution_factor =
-        ToResolutionFactor(static_cast<Resolution>(ui->resolution_factor_combobox->currentIndex()));
-    Settings::values.aspect_ratio = ui->aspect_ratio_combobox->currentIndex();
+    const auto resolution = static_cast<Resolution>(ui->resolution_factor_combobox->currentIndex());
+    Settings::values.resolution_factor = ToResolutionFactor(resolution);
     Settings::values.use_disk_shader_cache = ui->use_disk_shader_cache->isChecked();
+    Settings::values.use_accurate_gpu_emulation = ui->use_accurate_gpu_emulation->isChecked();
     Settings::values.use_asynchronous_gpu_emulation =
         ui->use_asynchronous_gpu_emulation->isChecked();
+    Settings::values.use_resolution_scanner = resolution == Resolution::Scanner;
+    Settings::values.force_30fps_mode = ui->force_30fps_mode->isChecked();
     Settings::values.bg_red = static_cast<float>(bg_color.redF());
     Settings::values.bg_green = static_cast<float>(bg_color.greenF());
     Settings::values.bg_blue = static_cast<float>(bg_color.blueF());
@@ -145,37 +117,4 @@ void ConfigureGraphics::UpdateBackgroundColorButton(QColor color) {
 
     const QIcon color_icon(pixmap);
     ui->bg_button->setIcon(color_icon);
-}
-
-void ConfigureGraphics::UpdateDeviceComboBox() {
-    ui->device->clear();
-
-    bool enabled = false;
-    switch (GetCurrentGraphicsBackend()) {
-    case Settings::RendererBackend::OpenGL:
-        ui->device->addItem(tr("OpenGL Graphics Device"));
-        enabled = false;
-        break;
-    case Settings::RendererBackend::Vulkan:
-        for (const auto device : vulkan_devices) {
-            ui->device->addItem(device);
-        }
-        ui->device->setCurrentIndex(vulkan_device);
-        enabled = !vulkan_devices.empty();
-        break;
-    }
-    ui->device->setEnabled(enabled && !Core::System::GetInstance().IsPoweredOn());
-}
-
-void ConfigureGraphics::RetrieveVulkanDevices() {
-#ifdef HAS_VULKAN
-    vulkan_devices.clear();
-    for (auto& name : Vulkan::RendererVulkan::EnumerateDevices()) {
-        vulkan_devices.push_back(QString::fromStdString(name));
-    }
-#endif
-}
-
-Settings::RendererBackend ConfigureGraphics::GetCurrentGraphicsBackend() const {
-    return static_cast<Settings::RendererBackend>(ui->api->currentIndex());
 }

@@ -7,10 +7,10 @@
 namespace UISettings {
 
 const Themes themes{{
-    {"Light", "default"},
-    {"Light Colorful", "colorful"},
+    {"Default", "default"},
     {"Dark", "qdarkstyle"},
-    {"Dark Colorful", "colorful_dark"},
+    {"Colorful", "colorful"},
+    {"Colorful Dark", "colorful_dark"},
 }};
 
 Values values = {};

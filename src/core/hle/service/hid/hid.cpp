@@ -10,11 +10,9 @@
 #include "core/core_timing_util.h"
 #include "core/frontend/emu_window.h"
 #include "core/frontend/input.h"
-#include "core/hardware_properties.h"
 #include "core/hle/ipc_helpers.h"
 #include "core/hle/kernel/client_port.h"
 #include "core/hle/kernel/client_session.h"
-#include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/readable_event.h"
 #include "core/hle/kernel/shared_memory.h"
 #include "core/hle/kernel/writable_event.h"
@@ -39,11 +37,9 @@ namespace Service::HID {
 
 // Updating period for each HID device.
 // TODO(ogniK): Find actual polling rate of hid
-constexpr s64 pad_update_ticks = static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 66);
-[[maybe_unused]] constexpr s64 accelerometer_update_ticks =
-    static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 100);
-[[maybe_unused]] constexpr s64 gyroscope_update_ticks =
-    static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 100);
+constexpr s64 pad_update_ticks = static_cast<s64>(Core::Timing::BASE_CLOCK_RATE / 66);
+constexpr s64 accelerometer_update_ticks = static_cast<s64>(Core::Timing::BASE_CLOCK_RATE / 100);
+constexpr s64 gyroscope_update_ticks = static_cast<s64>(Core::Timing::BASE_CLOCK_RATE / 100);
 constexpr std::size_t SHARED_MEMORY_SIZE = 0x40000;
 
 IAppletResource::IAppletResource(Core::System& system)
@@ -54,7 +50,9 @@ IAppletResource::IAppletResource(Core::System& system)
     RegisterHandlers(functions);
 
     auto& kernel = system.Kernel();
-    shared_mem = SharedFrom(&kernel.GetHidSharedMem());
+    shared_mem = Kernel::SharedMemory::Create(
+        kernel, nullptr, SHARED_MEMORY_SIZE, Kernel::MemoryPermission::ReadWrite,
+        Kernel::MemoryPermission::Read, 0, Kernel::MemoryRegion::BASE, "HID:SharedMemory");
 
     MakeController<Controller_DebugPad>(HidController::DebugPad);
     MakeController<Controller_Touchscreen>(HidController::Touchscreen);
@@ -77,14 +75,15 @@ IAppletResource::IAppletResource(Core::System& system)
     GetController<Controller_Stubbed>(HidController::Unknown3).SetCommonHeaderOffset(0x5000);
 
     // Register update callbacks
+    auto& core_timing = system.CoreTiming();
     pad_update_event =
-        Core::Timing::CreateEvent("HID::UpdatePadCallback", [this](u64 userdata, s64 cycles_late) {
+        core_timing.RegisterEvent("HID::UpdatePadCallback", [this](u64 userdata, s64 cycles_late) {
             UpdateControllers(userdata, cycles_late);
         });
 
     // TODO(shinyquagsire23): Other update callbacks? (accel, gyro?)
 
-    system.CoreTiming().ScheduleEvent(pad_update_ticks, pad_update_event);
+    core_timing.ScheduleEvent(pad_update_ticks, pad_update_event);
 
     ReloadInputDevices();
 }
@@ -194,7 +193,7 @@ Hid::Hid(Core::System& system) : ServiceFramework("hid"), system(system) {
         {101, &Hid::GetSupportedNpadStyleSet, "GetSupportedNpadStyleSet"},
         {102, &Hid::SetSupportedNpadIdType, "SetSupportedNpadIdType"},
         {103, &Hid::ActivateNpad, "ActivateNpad"},
-        {104, &Hid::DeactivateNpad, "DeactivateNpad"},
+        {104, nullptr, "DeactivateNpad"},
         {106, &Hid::AcquireNpadStyleSetUpdateEventHandle, "AcquireNpadStyleSetUpdateEventHandle"},
         {107, &Hid::DisconnectNpad, "DisconnectNpad"},
         {108, &Hid::GetPlayerLedPattern, "GetPlayerLedPattern"},
@@ -202,20 +201,18 @@ Hid::Hid(Core::System& system) : ServiceFramework("hid"), system(system) {
         {120, &Hid::SetNpadJoyHoldType, "SetNpadJoyHoldType"},
         {121, &Hid::GetNpadJoyHoldType, "GetNpadJoyHoldType"},
         {122, &Hid::SetNpadJoyAssignmentModeSingleByDefault, "SetNpadJoyAssignmentModeSingleByDefault"},
-        {123, &Hid::SetNpadJoyAssignmentModeSingle, "SetNpadJoyAssignmentModeSingle"},
+        {123, nullptr, "SetNpadJoyAssignmentModeSingleByDefault"},
         {124, &Hid::SetNpadJoyAssignmentModeDual, "SetNpadJoyAssignmentModeDual"},
         {125, &Hid::MergeSingleJoyAsDualJoy, "MergeSingleJoyAsDualJoy"},
         {126, &Hid::StartLrAssignmentMode, "StartLrAssignmentMode"},
         {127, &Hid::StopLrAssignmentMode, "StopLrAssignmentMode"},
         {128, &Hid::SetNpadHandheldActivationMode, "SetNpadHandheldActivationMode"},
-        {129, &Hid::GetNpadHandheldActivationMode, "GetNpadHandheldActivationMode"},
+        {129, nullptr, "GetNpadHandheldActivationMode"},
         {130, &Hid::SwapNpadAssignment, "SwapNpadAssignment"},
         {131, nullptr, "IsUnintendedHomeButtonInputProtectionEnabled"},
         {132, nullptr, "EnableUnintendedHomeButtonInputProtection"},
         {133, nullptr, "SetNpadJoyAssignmentModeSingleWithDestination"},
         {134, nullptr, "SetNpadAnalogStickUseCenterClamp"},
-        {135, nullptr, "SetNpadCaptureButtonAssignment"},
-        {136, nullptr, "ClearNpadCaptureButtonAssignment"},
         {200, &Hid::GetVibrationDeviceInfo, "GetVibrationDeviceInfo"},
         {201, &Hid::SendVibrationValue, "SendVibrationValue"},
         {202, &Hid::GetActualVibrationValue, "GetActualVibrationValue"},
@@ -233,8 +230,8 @@ Hid::Hid(Core::System& system) : ServiceFramework("hid"), system(system) {
         {302, nullptr, "StopConsoleSixAxisSensor"},
         {303, nullptr, "ActivateSevenSixAxisSensor"},
         {304, nullptr, "StartSevenSixAxisSensor"},
-        {305, &Hid::StopSevenSixAxisSensor, "StopSevenSixAxisSensor"},
-        {306, &Hid::InitializeSevenSixAxisSensor, "InitializeSevenSixAxisSensor"},
+        {305, nullptr, "StopSevenSixAxisSensor"},
+        {306, nullptr, "InitializeSevenSixAxisSensor"},
         {307, nullptr, "FinalizeSevenSixAxisSensor"},
         {308, nullptr, "SetSevenSixAxisSensorFusionStrength"},
         {309, nullptr, "GetSevenSixAxisSensorFusionStrength"},
@@ -246,8 +243,6 @@ Hid::Hid(Core::System& system) : ServiceFramework("hid"), system(system) {
         {404, nullptr, "HasLeftRightBattery"},
         {405, nullptr, "GetNpadInterfaceType"},
         {406, nullptr, "GetNpadLeftRightInterfaceType"},
-        {407, nullptr, "GetNpadOfHighestBatteryLevelForJoyLeft"},
-        {408, nullptr, "GetNpadOfHighestBatteryLevelForJoyRight"},
         {500, nullptr, "GetPalmaConnectionHandle"},
         {501, nullptr, "InitializePalma"},
         {502, nullptr, "AcquirePalmaOperationCompleteEvent"},
@@ -275,14 +270,8 @@ Hid::Hid(Core::System& system) : ServiceFramework("hid"), system(system) {
         {524, nullptr, "PairPalma"},
         {525, &Hid::SetPalmaBoostMode, "SetPalmaBoostMode"},
         {526, nullptr, "CancelWritePalmaWaveEntry"},
-        {527, nullptr, "EnablePalmaBoostMode"},
-        {528, nullptr, "GetPalmaBluetoothAddress"},
-        {529, nullptr, "SetDisallowedPalmaConnection"},
         {1000, nullptr, "SetNpadCommunicationMode"},
         {1001, nullptr, "GetNpadCommunicationMode"},
-        {1002, nullptr, "SetTouchScreenConfiguration"},
-        {1003, nullptr, "IsFirmwareUpdateNeededForNotification"},
-        {2000, nullptr, "ActivateDigitizer"},
     };
     // clang-format on
 
@@ -479,17 +468,6 @@ void Hid::ActivateNpad(Kernel::HLERequestContext& ctx) {
     applet_resource->ActivateController(HidController::NPad);
 }
 
-void Hid::DeactivateNpad(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-
-    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", applet_resource_user_id);
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-    applet_resource->DeactivateController(HidController::NPad);
-}
-
 void Hid::AcquireNpadStyleSetUpdateEventHandle(Kernel::HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const auto npad_id{rp.Pop<u32>()};
@@ -566,124 +544,8 @@ void Hid::SetNpadJoyAssignmentModeSingleByDefault(Kernel::HLERequestContext& ctx
     LOG_WARNING(Service_HID, "(STUBBED) called, npad_id={}, applet_resource_user_id={}", npad_id,
                 applet_resource_user_id);
 
-    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
-    controller.SetNpadMode(npad_id, Controller_NPad::NPadAssignments::Single);
-
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::SetNpadJoyAssignmentModeSingle(Kernel::HLERequestContext& ctx) {
-    // TODO: Check the differences between this and SetNpadJoyAssignmentModeSingleByDefault
-    IPC::RequestParser rp{ctx};
-    const auto npad_id{rp.Pop<u32>()};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-    const auto npad_joy_device_type{rp.Pop<u64>()};
-
-    LOG_WARNING(Service_HID,
-                "(STUBBED) called, npad_id={}, applet_resource_user_id={}, npad_joy_device_type={}",
-                npad_id, applet_resource_user_id, npad_joy_device_type);
-
-    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
-    controller.SetNpadMode(npad_id, Controller_NPad::NPadAssignments::Single);
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::SetNpadJoyAssignmentModeDual(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto npad_id{rp.Pop<u32>()};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-
-    LOG_DEBUG(Service_HID, "called, npad_id={}, applet_resource_user_id={}", npad_id,
-              applet_resource_user_id);
-
-    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
-    controller.SetNpadMode(npad_id, Controller_NPad::NPadAssignments::Dual);
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::MergeSingleJoyAsDualJoy(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto unknown_1{rp.Pop<u32>()};
-    const auto unknown_2{rp.Pop<u32>()};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-
-    LOG_WARNING(Service_HID,
-                "(STUBBED) called, unknown_1={}, unknown_2={}, applet_resource_user_id={}",
-                unknown_1, unknown_2, applet_resource_user_id);
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::StartLrAssignmentMode(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-
-    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", applet_resource_user_id);
-    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
-    controller.StartLRAssignmentMode();
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::StopLrAssignmentMode(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-
-    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", applet_resource_user_id);
-    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
-    controller.StopLRAssignmentMode();
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::SetNpadHandheldActivationMode(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-    const auto mode{rp.Pop<u64>()};
-
-    LOG_WARNING(Service_HID, "(STUBBED) called, applet_resource_user_id={}, mode={}",
-                applet_resource_user_id, mode);
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::GetNpadHandheldActivationMode(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-
-    LOG_WARNING(Service_HID, "(STUBBED) called, applet_resource_user_id={}",
-                applet_resource_user_id);
-
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
-void Hid::SwapNpadAssignment(Kernel::HLERequestContext& ctx) {
-    IPC::RequestParser rp{ctx};
-    const auto npad_1{rp.Pop<u32>()};
-    const auto npad_2{rp.Pop<u32>()};
-    const auto applet_resource_user_id{rp.Pop<u64>()};
-
-    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}, npad_1={}, npad_2={}",
-              applet_resource_user_id, npad_1, npad_2);
-
-    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
-    IPC::ResponseBuilder rb{ctx, 2};
-    if (controller.SwapNpadAssignment(npad_1, npad_2)) {
-        rb.Push(RESULT_SUCCESS);
-    } else {
-        LOG_ERROR(Service_HID, "Npads are not connected!");
-        rb.Push(ERR_NPAD_NOT_CONNECTED);
-    }
 }
 
 void Hid::BeginPermitVibrationSession(Kernel::HLERequestContext& ctx) {
@@ -758,6 +620,47 @@ void Hid::GetActualVibrationValue(Kernel::HLERequestContext& ctx) {
     rb.Push(RESULT_SUCCESS);
     rb.PushRaw<Controller_NPad::Vibration>(
         applet_resource->GetController<Controller_NPad>(HidController::NPad).GetLastVibration());
+}
+
+void Hid::SetNpadJoyAssignmentModeDual(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto npad_id{rp.Pop<u32>()};
+    const auto applet_resource_user_id{rp.Pop<u64>()};
+
+    LOG_DEBUG(Service_HID, "called, npad_id={}, applet_resource_user_id={}", npad_id,
+              applet_resource_user_id);
+
+    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
+    controller.SetNpadMode(npad_id, Controller_NPad::NPadAssignments::Dual);
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void Hid::MergeSingleJoyAsDualJoy(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto unknown_1{rp.Pop<u32>()};
+    const auto unknown_2{rp.Pop<u32>()};
+    const auto applet_resource_user_id{rp.Pop<u64>()};
+
+    LOG_WARNING(Service_HID,
+                "(STUBBED) called, unknown_1={}, unknown_2={}, applet_resource_user_id={}",
+                unknown_1, unknown_2, applet_resource_user_id);
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void Hid::SetNpadHandheldActivationMode(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto applet_resource_user_id{rp.Pop<u64>()};
+    const auto mode{rp.Pop<u64>()};
+
+    LOG_WARNING(Service_HID, "(STUBBED) called, applet_resource_user_id={}, mode={}",
+                applet_resource_user_id, mode);
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
 }
 
 void Hid::GetVibrationDeviceInfo(Kernel::HLERequestContext& ctx) {
@@ -853,22 +756,47 @@ void Hid::SetPalmaBoostMode(Kernel::HLERequestContext& ctx) {
     rb.Push(RESULT_SUCCESS);
 }
 
-void Hid::StopSevenSixAxisSensor(Kernel::HLERequestContext& ctx) {
+void Hid::StartLrAssignmentMode(Kernel::HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const auto applet_resource_user_id{rp.Pop<u64>()};
 
-    LOG_WARNING(Service_HID, "(STUBBED) called, applet_resource_user_id={}",
-                applet_resource_user_id);
+    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", applet_resource_user_id);
+    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
+    controller.StartLRAssignmentMode();
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
 }
 
-void Hid::InitializeSevenSixAxisSensor(Kernel::HLERequestContext& ctx) {
-    LOG_WARNING(Service_HID, "(STUBBED) called");
+void Hid::StopLrAssignmentMode(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto applet_resource_user_id{rp.Pop<u64>()};
+
+    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}", applet_resource_user_id);
+    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
+    controller.StopLRAssignmentMode();
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
+}
+
+void Hid::SwapNpadAssignment(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto npad_1{rp.Pop<u32>()};
+    const auto npad_2{rp.Pop<u32>()};
+    const auto applet_resource_user_id{rp.Pop<u64>()};
+
+    LOG_DEBUG(Service_HID, "called, applet_resource_user_id={}, npad_1={}, npad_2={}",
+              applet_resource_user_id, npad_1, npad_2);
+
+    auto& controller = applet_resource->GetController<Controller_NPad>(HidController::NPad);
+    IPC::ResponseBuilder rb{ctx, 2};
+    if (controller.SwapNpadAssignment(npad_1, npad_2)) {
+        rb.Push(RESULT_SUCCESS);
+    } else {
+        LOG_ERROR(Service_HID, "Npads are not connected!");
+        rb.Push(ERR_NPAD_NOT_CONNECTED);
+    }
 }
 
 class HidDbg final : public ServiceFramework<HidDbg> {
@@ -882,7 +810,6 @@ public:
             {10, nullptr, "DeactivateTouchScreen"},
             {11, nullptr, "SetTouchScreenAutoPilotState"},
             {12, nullptr, "UnsetTouchScreenAutoPilotState"},
-            {13, nullptr, "GetTouchScreenConfiguration"},
             {20, nullptr, "DeactivateMouse"},
             {21, nullptr, "SetMouseAutoPilotState"},
             {22, nullptr, "UnsetMouseAutoPilotState"},
@@ -892,9 +819,7 @@ public:
             {50, nullptr, "DeactivateXpad"},
             {51, nullptr, "SetXpadAutoPilotState"},
             {52, nullptr, "UnsetXpadAutoPilotState"},
-            {60, nullptr, "ClearNpadSystemCommonPolicy"},
-            {61, nullptr, "DeactivateNpad"},
-            {62, nullptr, "ForceDisconnectNpad"},
+            {60, nullptr, "DeactivateJoyXpad"},
             {91, nullptr, "DeactivateGesture"},
             {110, nullptr, "DeactivateHomeButton"},
             {111, nullptr, "SetHomeButtonAutoPilotState"},
@@ -914,15 +839,6 @@ public:
             {141, nullptr, "GetConsoleSixAxisSensorSamplingFrequency"},
             {142, nullptr, "DeactivateSevenSixAxisSensor"},
             {143, nullptr, "GetConsoleSixAxisSensorCountStates"},
-            {144, nullptr, "GetAccelerometerFsr"},
-            {145, nullptr, "SetAccelerometerFsr"},
-            {146, nullptr, "GetAccelerometerOdr"},
-            {147, nullptr, "SetAccelerometerOdr"},
-            {148, nullptr, "GetGyroscopeFsr"},
-            {149, nullptr, "SetGyroscopeFsr"},
-            {150, nullptr, "GetGyroscopeOdr"},
-            {151, nullptr, "SetGyroscopeOdr"},
-            {152, nullptr, "GetWhoAmI"},
             {201, nullptr, "ActivateFirmwareUpdate"},
             {202, nullptr, "DeactivateFirmwareUpdate"},
             {203, nullptr, "StartFirmwareUpdate"},
@@ -951,17 +867,6 @@ public:
             {233, nullptr, "ClearPairingInfo"},
             {234, nullptr, "GetUniquePadDeviceTypeSetInternal"},
             {235, nullptr, "EnableAnalogStickPower"},
-            {236, nullptr, "RequestKuinaUartClockCal"},
-            {237, nullptr, "GetKuinaUartClockCal"},
-            {238, nullptr, "SetKuinaUartClockTrim"},
-            {239, nullptr, "KuinaLoopbackTest"},
-            {240, nullptr, "RequestBatteryVoltage"},
-            {241, nullptr, "GetBatteryVoltage"},
-            {242, nullptr, "GetUniquePadPowerInfo"},
-            {243, nullptr, "RebootUniquePad"},
-            {244, nullptr, "RequestKuinaFirmwareVersion"},
-            {245, nullptr, "GetKuinaFirmwareVersion"},
-            {246, nullptr, "GetVidPid"},
             {301, nullptr, "GetAbstractedPadHandles"},
             {302, nullptr, "GetAbstractedPadState"},
             {303, nullptr, "GetAbstractedPadsState"},
@@ -980,17 +885,6 @@ public:
             {350, nullptr, "AddRegisteredDevice"},
             {400, nullptr, "DisableExternalMcuOnNxDevice"},
             {401, nullptr, "DisableRailDeviceFiltering"},
-            {402, nullptr, "EnableWiredPairing"},
-            {403, nullptr, "EnableShipmentModeAutoClear"},
-            {500, nullptr, "SetFactoryInt"},
-            {501, nullptr, "IsFactoryBootEnabled"},
-            {550, nullptr, "SetAnalogStickModelDataTemporarily"},
-            {551, nullptr, "GetAnalogStickModelData"},
-            {552, nullptr, "ResetAnalogStickModelData"},
-            {600, nullptr, "ConvertPadState"},
-            {2000, nullptr, "DeactivateDigitizer"},
-            {2001, nullptr, "SetDigitizerAutoPilotState"},
-            {2002, nullptr, "UnsetDigitizerAutoPilotState"},
         };
         // clang-format on
 
@@ -1030,9 +924,6 @@ public:
             {310, nullptr, "GetMaskedSupportedNpadStyleSet"},
             {311, nullptr, "SetNpadPlayerLedBlinkingDevice"},
             {312, nullptr, "SetSupportedNpadStyleSetAll"},
-            {313, nullptr, "GetNpadCaptureButtonAssignment"},
-            {314, nullptr, "GetAppletFooterUiType"},
-            {315, nullptr, "GetAppletDetailedUiType"},
             {321, nullptr, "GetUniquePadsFromNpad"},
             {322, nullptr, "GetIrSensorState"},
             {323, nullptr, "GetXcdHandleForNpadWithIrSensor"},
@@ -1048,8 +939,6 @@ public:
             {513, nullptr, "EndPermitVibrationSession"},
             {520, nullptr, "EnableHandheldHids"},
             {521, nullptr, "DisableHandheldHids"},
-            {522, nullptr, "SetJoyConRailEnabled"},
-            {523, nullptr, "IsJoyConRailEnabled"},
             {540, nullptr, "AcquirePlayReportControllerUsageUpdateEvent"},
             {541, nullptr, "GetPlayReportControllerUsages"},
             {542, nullptr, "AcquirePlayReportRegisteredDeviceUpdateEvent"},
@@ -1076,7 +965,6 @@ public:
             {809, nullptr, "GetUniquePadSerialNumber"},
             {810, nullptr, "GetUniquePadControllerNumber"},
             {811, nullptr, "GetSixAxisSensorUserCalibrationStage"},
-            {812, nullptr, "GetConsoleUniqueSixAxisSensorHandle"},
             {821, nullptr, "StartAnalogStickManualCalibration"},
             {822, nullptr, "RetryCurrentAnalogStickManualCalibrationStage"},
             {823, nullptr, "CancelAnalogStickManualCalibration"},
@@ -1087,8 +975,6 @@ public:
             {828, nullptr, "IsAnalogStickInReleasePosition"},
             {829, nullptr, "IsAnalogStickInCircumference"},
             {830, nullptr, "SetNotificationLedPattern"},
-            {831, nullptr, "SetNotificationLedPatternWithTimeout"},
-            {832, nullptr, "PrepareHidsForNotificationWake"},
             {850, nullptr, "IsUsbFullKeyControllerEnabled"},
             {851, nullptr, "EnableUsbFullKeyController"},
             {852, nullptr, "IsUsbConnected"},
@@ -1118,13 +1004,6 @@ public:
             {1132, nullptr, "CheckUsbFirmwareUpdateRequired"},
             {1133, nullptr, "StartUsbFirmwareUpdate"},
             {1134, nullptr, "GetUsbFirmwareUpdateState"},
-            {1150, nullptr, "SetTouchScreenMagnification"},
-            {1151, nullptr, "GetTouchScreenFirmwareVersion"},
-            {1152, nullptr, "SetTouchScreenDefaultConfiguration"},
-            {1153, nullptr, "GetTouchScreenDefaultConfiguration"},
-            {1154, nullptr, "IsFirmwareAvailableForNotification"},
-            {1155, nullptr, "SetForceHandheldStyleVibration"},
-            {1156, nullptr, "SendConnectionTriggerWithoutTimeoutEvent"},
         };
         // clang-format on
 

@@ -45,8 +45,6 @@ u32 nvhost_as_gpu::ioctl(Ioctl command, const std::vector<u8>& input, const std:
         return GetVARegions(input, output);
     case IoctlCommand::IocUnmapBufferCommand:
         return UnmapBuffer(input, output);
-    default:
-        break;
     }
 
     if (static_cast<IoctlCommand>(command.cmd.Value()) == IoctlCommand::IocRemapCommand)
@@ -104,12 +102,10 @@ u32 nvhost_as_gpu::Remap(const std::vector<u8>& input, std::vector<u8>& output) 
 
         ASSERT(object->status == nvmap::Object::Status::Allocated);
 
-        const u64 size = static_cast<u64>(entry.pages) << 0x10;
+        u64 size = static_cast<u64>(entry.pages) << 0x10;
         ASSERT(size <= object->size);
-        const u64 map_offset = static_cast<u64>(entry.map_offset) << 0x10;
 
-        const GPUVAddr returned =
-            gpu.MemoryManager().MapBufferEx(object->addr + map_offset, offset, size);
+        GPUVAddr returned = gpu.MemoryManager().MapBufferEx(object->addr, offset, size);
         ASSERT(returned == offset);
     }
     std::memcpy(output.data(), entries.data(), output.size());

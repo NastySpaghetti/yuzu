@@ -202,7 +202,7 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IHomeMenuFunctions>(system.Kernel());
+        rb.PushIpcInterface<IHomeMenuFunctions>();
     }
 
     void GetGlobalStateController(Kernel::HLERequestContext& ctx) {

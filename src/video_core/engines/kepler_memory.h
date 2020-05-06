@@ -40,15 +40,12 @@ public:
     /// Write the value to the register identified by method.
     void CallMethod(const GPU::MethodCall& method_call);
 
-    /// Write multiple values to the register identified by method.
-    void CallMultiMethod(u32 method, const u32* base_start, u32 amount, u32 methods_pending);
-
     struct Regs {
         static constexpr size_t NUM_REGS = 0x7F;
 
         union {
             struct {
-                INSERT_UNION_PADDING_WORDS(0x60);
+                INSERT_PADDING_WORDS(0x60);
 
                 Upload::Registers upload;
 
@@ -60,7 +57,7 @@ public:
 
                 u32 data;
 
-                INSERT_UNION_PADDING_WORDS(0x11);
+                INSERT_PADDING_WORDS(0x11);
             };
             std::array<u32, NUM_REGS> reg_array;
         };

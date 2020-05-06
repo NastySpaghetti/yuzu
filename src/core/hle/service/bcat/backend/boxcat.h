@@ -9,10 +9,6 @@
 #include <optional>
 #include "core/hle/service/bcat/backend/backend.h"
 
-namespace Service::AM::Applets {
-class AppletManager;
-}
-
 namespace Service::BCAT {
 
 struct EventStatus {
@@ -24,13 +20,12 @@ struct EventStatus {
 /// Boxcat is yuzu's custom backend implementation of Nintendo's BCAT service. It is free to use and
 /// doesn't require a switch or nintendo account. The content is controlled by the yuzu team.
 class Boxcat final : public Backend {
-    friend void SynchronizeInternal(AM::Applets::AppletManager& applet_manager,
-                                    DirectoryGetter dir_getter, TitleIDVersion title,
+    friend void SynchronizeInternal(DirectoryGetter dir_getter, TitleIDVersion title,
                                     ProgressServiceBackend& progress,
                                     std::optional<std::string> dir_name);
 
 public:
-    explicit Boxcat(AM::Applets::AppletManager& applet_manager_, DirectoryGetter getter);
+    explicit Boxcat(DirectoryGetter getter);
     ~Boxcat() override;
 
     bool Synchronize(TitleIDVersion title, ProgressServiceBackend& progress) override;
@@ -58,7 +53,6 @@ private:
 
     class Client;
     std::unique_ptr<Client> client;
-    AM::Applets::AppletManager& applet_manager;
 };
 
 } // namespace Service::BCAT

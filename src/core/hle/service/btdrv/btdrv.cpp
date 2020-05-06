@@ -34,7 +34,8 @@ public:
         RegisterHandlers(functions);
 
         auto& kernel = system.Kernel();
-        register_event = Kernel::WritableEvent::CreateEventPair(kernel, "BT:RegisterEvent");
+        register_event = Kernel::WritableEvent::CreateEventPair(
+            kernel, Kernel::ResetType::Automatic, "BT:RegisterEvent");
     }
 
 private:
@@ -155,7 +156,6 @@ public:
             {98, nullptr, "SetLeScanParameter"},
             {256, nullptr, "GetIsManufacturingMode"},
             {257, nullptr, "EmulateBluetoothCrash"},
-            {258, nullptr, "GetBleChannelMap"},
         };
         // clang-format on
 

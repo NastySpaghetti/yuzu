@@ -47,7 +47,8 @@ inline GLenum VertexType(Maxwell::VertexAttribute attrib) {
         case Maxwell::VertexAttribute::Size::Size_10_10_10_2:
             return GL_UNSIGNED_INT_2_10_10_10_REV;
         default:
-            LOG_ERROR(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
+            LOG_CRITICAL(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
+            UNREACHABLE();
             return {};
         }
     case Maxwell::VertexAttribute::Type::SignedInt:
@@ -71,7 +72,8 @@ inline GLenum VertexType(Maxwell::VertexAttribute attrib) {
         case Maxwell::VertexAttribute::Size::Size_10_10_10_2:
             return GL_INT_2_10_10_10_REV;
         default:
-            LOG_ERROR(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
+            LOG_CRITICAL(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
+            UNREACHABLE();
             return {};
         }
     case Maxwell::VertexAttribute::Type::Float:
@@ -87,43 +89,13 @@ inline GLenum VertexType(Maxwell::VertexAttribute attrib) {
         case Maxwell::VertexAttribute::Size::Size_32_32_32_32:
             return GL_FLOAT;
         default:
-            LOG_ERROR(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
-            return {};
-        }
-    case Maxwell::VertexAttribute::Type::UnsignedScaled:
-        switch (attrib.size) {
-        case Maxwell::VertexAttribute::Size::Size_8:
-        case Maxwell::VertexAttribute::Size::Size_8_8:
-        case Maxwell::VertexAttribute::Size::Size_8_8_8:
-        case Maxwell::VertexAttribute::Size::Size_8_8_8_8:
-            return GL_UNSIGNED_BYTE;
-        case Maxwell::VertexAttribute::Size::Size_16:
-        case Maxwell::VertexAttribute::Size::Size_16_16:
-        case Maxwell::VertexAttribute::Size::Size_16_16_16:
-        case Maxwell::VertexAttribute::Size::Size_16_16_16_16:
-            return GL_UNSIGNED_SHORT;
-        default:
-            LOG_ERROR(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
-            return {};
-        }
-    case Maxwell::VertexAttribute::Type::SignedScaled:
-        switch (attrib.size) {
-        case Maxwell::VertexAttribute::Size::Size_8:
-        case Maxwell::VertexAttribute::Size::Size_8_8:
-        case Maxwell::VertexAttribute::Size::Size_8_8_8:
-        case Maxwell::VertexAttribute::Size::Size_8_8_8_8:
-            return GL_BYTE;
-        case Maxwell::VertexAttribute::Size::Size_16:
-        case Maxwell::VertexAttribute::Size::Size_16_16:
-        case Maxwell::VertexAttribute::Size::Size_16_16_16:
-        case Maxwell::VertexAttribute::Size::Size_16_16_16_16:
-            return GL_SHORT;
-        default:
-            LOG_ERROR(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
+            LOG_CRITICAL(Render_OpenGL, "Unimplemented vertex size={}", attrib.SizeString());
+            UNREACHABLE();
             return {};
         }
     default:
-        LOG_ERROR(Render_OpenGL, "Unimplemented vertex type={}", attrib.TypeString());
+        LOG_CRITICAL(Render_OpenGL, "Unimplemented vertex type={}", attrib.TypeString());
+        UNREACHABLE();
         return {};
     }
 }
@@ -148,8 +120,6 @@ inline GLenum PrimitiveTopology(Maxwell::PrimitiveTopology topology) {
         return GL_POINTS;
     case Maxwell::PrimitiveTopology::Lines:
         return GL_LINES;
-    case Maxwell::PrimitiveTopology::LineLoop:
-        return GL_LINE_LOOP;
     case Maxwell::PrimitiveTopology::LineStrip:
         return GL_LINE_STRIP;
     case Maxwell::PrimitiveTopology::Triangles:
@@ -160,23 +130,11 @@ inline GLenum PrimitiveTopology(Maxwell::PrimitiveTopology topology) {
         return GL_TRIANGLE_FAN;
     case Maxwell::PrimitiveTopology::Quads:
         return GL_QUADS;
-    case Maxwell::PrimitiveTopology::QuadStrip:
-        return GL_QUAD_STRIP;
-    case Maxwell::PrimitiveTopology::Polygon:
-        return GL_POLYGON;
-    case Maxwell::PrimitiveTopology::LinesAdjacency:
-        return GL_LINES_ADJACENCY;
-    case Maxwell::PrimitiveTopology::LineStripAdjacency:
-        return GL_LINE_STRIP_ADJACENCY;
-    case Maxwell::PrimitiveTopology::TrianglesAdjacency:
-        return GL_TRIANGLES_ADJACENCY;
-    case Maxwell::PrimitiveTopology::TriangleStripAdjacency:
-        return GL_TRIANGLE_STRIP_ADJACENCY;
-    case Maxwell::PrimitiveTopology::Patches:
-        return GL_PATCHES;
+    default:
+        LOG_CRITICAL(Render_OpenGL, "Unimplemented topology={}", static_cast<u32>(topology));
+        UNREACHABLE();
+        return {};
     }
-    UNREACHABLE_MSG("Invalid topology={}", static_cast<int>(topology));
-    return GL_POINTS;
 }
 
 inline GLenum TextureFilterMode(Tegra::Texture::TextureFilter filter_mode,
@@ -191,7 +149,6 @@ inline GLenum TextureFilterMode(Tegra::Texture::TextureFilter filter_mode,
         case Tegra::Texture::TextureMipmapFilter::Linear:
             return GL_LINEAR_MIPMAP_LINEAR;
         }
-        break;
     }
     case Tegra::Texture::TextureFilter::Nearest: {
         switch (mip_filter_mode) {
@@ -202,7 +159,6 @@ inline GLenum TextureFilterMode(Tegra::Texture::TextureFilter filter_mode,
         case Tegra::Texture::TextureMipmapFilter::Linear:
             return GL_NEAREST_MIPMAP_LINEAR;
         }
-        break;
     }
     }
     LOG_ERROR(Render_OpenGL, "Unimplemented texture filter mode={}", static_cast<u32>(filter_mode));
@@ -427,24 +383,24 @@ inline GLenum StencilOp(Maxwell::StencilOp stencil) {
     return GL_KEEP;
 }
 
-inline GLenum FrontFace(Maxwell::FrontFace front_face) {
+inline GLenum FrontFace(Maxwell::Cull::FrontFace front_face) {
     switch (front_face) {
-    case Maxwell::FrontFace::ClockWise:
+    case Maxwell::Cull::FrontFace::ClockWise:
         return GL_CW;
-    case Maxwell::FrontFace::CounterClockWise:
+    case Maxwell::Cull::FrontFace::CounterClockWise:
         return GL_CCW;
     }
     LOG_ERROR(Render_OpenGL, "Unimplemented front face cull={}", static_cast<u32>(front_face));
     return GL_CCW;
 }
 
-inline GLenum CullFace(Maxwell::CullFace cull_face) {
+inline GLenum CullFace(Maxwell::Cull::CullFace cull_face) {
     switch (cull_face) {
-    case Maxwell::CullFace::Front:
+    case Maxwell::Cull::CullFace::Front:
         return GL_FRONT;
-    case Maxwell::CullFace::Back:
+    case Maxwell::Cull::CullFace::Back:
         return GL_BACK;
-    case Maxwell::CullFace::FrontAndBack:
+    case Maxwell::Cull::CullFace::FrontAndBack:
         return GL_FRONT_AND_BACK;
     }
     LOG_ERROR(Render_OpenGL, "Unimplemented cull face={}", static_cast<u32>(cull_face));
@@ -488,24 +444,6 @@ inline GLenum LogicOp(Maxwell::LogicOperation operation) {
     }
     LOG_ERROR(Render_OpenGL, "Unimplemented logic operation={}", static_cast<u32>(operation));
     return GL_COPY;
-}
-
-inline GLenum PolygonMode(Maxwell::PolygonMode polygon_mode) {
-    switch (polygon_mode) {
-    case Maxwell::PolygonMode::Point:
-        return GL_POINT;
-    case Maxwell::PolygonMode::Line:
-        return GL_LINE;
-    case Maxwell::PolygonMode::Fill:
-        return GL_FILL;
-    }
-    UNREACHABLE_MSG("Invalid polygon mode={}", static_cast<int>(polygon_mode));
-    return GL_FILL;
-}
-
-inline GLenum ViewportSwizzle(Maxwell::ViewportSwizzle swizzle) {
-    // Enumeration order matches register order. We can convert it arithmetically.
-    return GL_VIEWPORT_SWIZZLE_POSITIVE_X_NV + static_cast<GLenum>(swizzle);
 }
 
 } // namespace MaxwellToGL

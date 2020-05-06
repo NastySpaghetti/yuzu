@@ -9,12 +9,6 @@ add_library(input_common STATIC
     motion_emu.h
     sdl/sdl.cpp
     sdl/sdl.h
-    udp/client.cpp
-    udp/client.h
-    udp/protocol.cpp
-    udp/protocol.h
-    udp/udp.cpp
-    udp/udp.h
 )
 
 if(SDL2_FOUND)
@@ -27,4 +21,4 @@ if(SDL2_FOUND)
 endif()
 
 create_target_directory_groups(input_common)
-target_link_libraries(input_common PUBLIC core PRIVATE common Boost::boost)
+target_link_libraries(input_common PUBLIC core PRIVATE common)

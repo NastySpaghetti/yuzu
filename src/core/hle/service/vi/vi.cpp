@@ -45,7 +45,7 @@ struct DisplayInfo {
 
     /// Whether or not the display has a limited number of layers.
     u8 has_limited_layers{1};
-    INSERT_PADDING_BYTES(7);
+    INSERT_PADDING_BYTES(7){};
 
     /// Indicates the total amount of layers supported by the display.
     /// @note This is only valid if has_limited_layers is set.
@@ -101,8 +101,8 @@ public:
     }
 
     std::u16string ReadInterfaceToken() {
-        [[maybe_unused]] const u32 unknown = Read<u32_le>();
-        const u32 length = Read<u32_le>();
+        u32 unknown = Read<u32_le>();
+        u32 length = Read<u32_le>();
 
         std::u16string token{};
 
@@ -267,7 +267,7 @@ protected:
 
 private:
     struct Data {
-        u32_le unk_0{};
+        u32_le unk_0;
     };
 
     Data data{};
@@ -513,8 +513,7 @@ private:
 
         auto& buffer_queue = nv_flinger->FindBufferQueue(id);
 
-        switch (transaction) {
-        case TransactionId::Connect: {
+        if (transaction == TransactionId::Connect) {
             IGBPConnectRequestParcel request{ctx.ReadBuffer()};
             IGBPConnectResponseParcel response{
                 static_cast<u32>(static_cast<u32>(DisplayResolution::UndockedWidth) *
@@ -522,18 +521,14 @@ private:
                 static_cast<u32>(static_cast<u32>(DisplayResolution::UndockedHeight) *
                                  Settings::values.resolution_factor)};
             ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        case TransactionId::SetPreallocatedBuffer: {
+        } else if (transaction == TransactionId::SetPreallocatedBuffer) {
             IGBPSetPreallocatedBufferRequestParcel request{ctx.ReadBuffer()};
 
             buffer_queue.SetPreallocatedBuffer(request.data.slot, request.buffer);
 
             IGBPSetPreallocatedBufferResponseParcel response{};
             ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        case TransactionId::DequeueBuffer: {
+        } else if (transaction == TransactionId::DequeueBuffer) {
             IGBPDequeueBufferRequestParcel request{ctx.ReadBuffer()};
             const u32 width{request.data.width};
             const u32 height{request.data.height};
@@ -546,8 +541,8 @@ private:
             } else {
                 // Wait the current thread until a buffer becomes available
                 ctx.SleepClientThread(
-                    "IHOSBinderDriver::DequeueBuffer", UINT64_MAX,
-                    [=](std::shared_ptr<Kernel::Thread> thread, Kernel::HLERequestContext& ctx,
+                    "IHOSBinderDriver::DequeueBuffer", -1,
+                    [=](Kernel::SharedPtr<Kernel::Thread> thread, Kernel::HLERequestContext& ctx,
                         Kernel::ThreadWakeupReason reason) {
                         // Repeat TransactParcel DequeueBuffer when a buffer is available
                         auto& buffer_queue = nv_flinger->FindBufferQueue(id);
@@ -561,18 +556,14 @@ private:
                     },
                     buffer_queue.GetWritableBufferWaitEvent());
             }
-            break;
-        }
-        case TransactionId::RequestBuffer: {
+        } else if (transaction == TransactionId::RequestBuffer) {
             IGBPRequestBufferRequestParcel request{ctx.ReadBuffer()};
 
             auto& buffer = buffer_queue.RequestBuffer(request.slot);
 
             IGBPRequestBufferResponseParcel response{buffer};
             ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        case TransactionId::QueueBuffer: {
+        } else if (transaction == TransactionId::QueueBuffer) {
             IGBPQueueBufferRequestParcel request{ctx.ReadBuffer()};
 
             buffer_queue.QueueBuffer(request.data.slot, request.data.transform,
@@ -581,9 +572,7 @@ private:
 
             IGBPQueueBufferResponseParcel response{1280, 720};
             ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        case TransactionId::Query: {
+        } else if (transaction == TransactionId::Query) {
             IGBPQueryRequestParcel request{ctx.ReadBuffer()};
 
             const u32 value =
@@ -591,38 +580,15 @@ private:
 
             IGBPQueryResponseParcel response{value};
             ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        case TransactionId::CancelBuffer: {
+        } else if (transaction == TransactionId::CancelBuffer) {
             LOG_CRITICAL(Service_VI, "(STUBBED) called, transaction=CancelBuffer");
-            break;
-        }
-        case TransactionId::Disconnect: {
-            LOG_WARNING(Service_VI, "(STUBBED) called, transaction=Disconnect");
-            const auto buffer = ctx.ReadBuffer();
-
-            buffer_queue.Disconnect();
-
-            IGBPEmptyResponseParcel response{};
-            ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        case TransactionId::DetachBuffer: {
+        } else if (transaction == TransactionId::Disconnect ||
+                   transaction == TransactionId::DetachBuffer) {
             const auto buffer = ctx.ReadBuffer();
 
             IGBPEmptyResponseParcel response{};
             ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        case TransactionId::SetBufferCount: {
-            LOG_WARNING(Service_VI, "(STUBBED) called, transaction=SetBufferCount");
-            [[maybe_unused]] const auto buffer = ctx.ReadBuffer();
-
-            IGBPEmptyResponseParcel response{};
-            ctx.WriteBuffer(response.Serialize());
-            break;
-        }
-        default:
+        } else {
             ASSERT_MSG(false, "Unimplemented");
         }
 
@@ -765,7 +731,6 @@ class IManagerDisplayService final : public ServiceFramework<IManagerDisplayServ
 public:
     explicit IManagerDisplayService(std::shared_ptr<NVFlinger::NVFlinger> nv_flinger)
         : ServiceFramework("IManagerDisplayService"), nv_flinger(std::move(nv_flinger)) {
-        // clang-format off
         static const FunctionInfo functions[] = {
             {200, nullptr, "AllocateProcessHeapBlock"},
             {201, nullptr, "FreeProcessHeapBlock"},
@@ -801,11 +766,8 @@ public:
             {6008, nullptr, "StartLayerPresentationFenceWait"},
             {6009, nullptr, "StopLayerPresentationFenceWait"},
             {6010, nullptr, "GetLayerPresentationAllFencesExpiredEvent"},
-            {6011, nullptr, "EnableLayerAutoClearTransitionBuffer"},
-            {6012, nullptr, "DisableLayerAutoClearTransitionBuffer"},
             {7000, nullptr, "SetContentVisibility"},
             {8000, nullptr, "SetConductorLayer"},
-            {8001, nullptr, "SetTimestampTracking"},
             {8100, nullptr, "SetIndirectProducerFlipOffset"},
             {8200, nullptr, "CreateSharedBufferStaticStorage"},
             {8201, nullptr, "CreateSharedBufferTransferMemory"},
@@ -838,8 +800,6 @@ public:
             {8297, nullptr, "GetSharedFrameBufferContentParameter"},
             {8298, nullptr, "ExpandStartupLogoOnSharedFrameBuffer"},
         };
-        // clang-format on
-
         RegisterHandlers(functions);
     }
 
@@ -867,7 +827,6 @@ private:
 
         const auto layer_id = nv_flinger->CreateLayer(display);
         if (!layer_id) {
-            LOG_ERROR(Service_VI, "Layer not found! display=0x{:016X}", display);
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NOT_FOUND);
             return;
@@ -984,7 +943,6 @@ private:
 
         const auto display_id = nv_flinger->OpenDisplay(name);
         if (!display_id) {
-            LOG_ERROR(Service_VI, "Display not found! display_name={}", name);
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NOT_FOUND);
             return;
@@ -1084,7 +1042,6 @@ private:
 
         const auto display_id = nv_flinger->OpenDisplay(display_name);
         if (!display_id) {
-            LOG_ERROR(Service_VI, "Layer not found! layer_id={}", layer_id);
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NOT_FOUND);
             return;
@@ -1092,7 +1049,6 @@ private:
 
         const auto buffer_queue_id = nv_flinger->FindBufferQueueId(*display_id, layer_id);
         if (!buffer_queue_id) {
-            LOG_ERROR(Service_VI, "Buffer queue id not found! display_id={}", *display_id);
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NOT_FOUND);
             return;
@@ -1102,18 +1058,6 @@ private:
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(RESULT_SUCCESS);
         rb.Push<u64>(ctx.WriteBuffer(native_window.Serialize()));
-    }
-
-    void CloseLayer(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const auto layer_id{rp.Pop<u64>()};
-
-        LOG_DEBUG(Service_VI, "called. layer_id=0x{:016X}", layer_id);
-
-        nv_flinger->CloseLayer(layer_id);
-
-        IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(RESULT_SUCCESS);
     }
 
     void CreateStrayLayer(Kernel::HLERequestContext& ctx) {
@@ -1128,7 +1072,6 @@ private:
 
         const auto layer_id = nv_flinger->CreateLayer(display_id);
         if (!layer_id) {
-            LOG_ERROR(Service_VI, "Layer not found! layer_id={}", *layer_id);
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NOT_FOUND);
             return;
@@ -1136,7 +1079,6 @@ private:
 
         const auto buffer_queue_id = nv_flinger->FindBufferQueueId(display_id, *layer_id);
         if (!buffer_queue_id) {
-            LOG_ERROR(Service_VI, "Buffer queue id not found! display_id={}", display_id);
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NOT_FOUND);
             return;
@@ -1167,7 +1109,6 @@ private:
 
         const auto vsync_event = nv_flinger->FindVsyncEvent(display_id);
         if (!vsync_event) {
-            LOG_ERROR(Service_VI, "Vsync event was not found for display_id={}", display_id);
             IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NOT_FOUND);
             return;
@@ -1208,7 +1149,6 @@ private:
         case NintendoScaleMode::PreserveAspectRatio:
             return MakeResult(ConvertedScaleMode::PreserveAspectRatio);
         default:
-            LOG_ERROR(Service_VI, "Invalid scaling mode specified, mode={}", mode);
             return ERR_OPERATION_FAILED;
         }
     }
@@ -1232,7 +1172,7 @@ IApplicationDisplayService::IApplicationDisplayService(
         {1101, &IApplicationDisplayService::SetDisplayEnabled, "SetDisplayEnabled"},
         {1102, &IApplicationDisplayService::GetDisplayResolution, "GetDisplayResolution"},
         {2020, &IApplicationDisplayService::OpenLayer, "OpenLayer"},
-        {2021, &IApplicationDisplayService::CloseLayer, "CloseLayer"},
+        {2021, nullptr, "CloseLayer"},
         {2030, &IApplicationDisplayService::CreateStrayLayer, "CreateStrayLayer"},
         {2031, &IApplicationDisplayService::DestroyStrayLayer, "DestroyStrayLayer"},
         {2101, &IApplicationDisplayService::SetLayerScalingMode, "SetLayerScalingMode"},
@@ -1265,7 +1205,6 @@ void detail::GetDisplayServiceImpl(Kernel::HLERequestContext& ctx,
     const auto policy = rp.PopEnum<Policy>();
 
     if (!IsValidServiceAccess(permission, policy)) {
-        LOG_ERROR(Service_VI, "Permission denied for policy {}", static_cast<u32>(policy));
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ERR_PERMISSION_DENIED);
         return;

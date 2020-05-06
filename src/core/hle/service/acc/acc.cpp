@@ -84,7 +84,7 @@ protected:
             LOG_ERROR(Service_ACC, "Failed to get profile base and data for user={}",
                       user_id.Format());
             IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(RESULT_UNKNOWN); // TODO(ogniK): Get actual error code
+            rb.Push(ResultCode(-1)); // TODO(ogniK): Get actual error code
         }
     }
 
@@ -98,7 +98,7 @@ protected:
         } else {
             LOG_ERROR(Service_ACC, "Failed to get profile base for user={}", user_id.Format());
             IPC::ResponseBuilder rb{ctx, 2};
-            rb.Push(RESULT_UNKNOWN); // TODO(ogniK): Get actual error code
+            rb.Push(ResultCode(-1)); // TODO(ogniK): Get actual error code
         }
     }
 
@@ -211,7 +211,7 @@ protected:
     }
 
     ProfileManager& profile_manager;
-    Common::UUID user_id{Common::INVALID_UUID}; ///< The user id this profile refers to.
+    Common::UUID user_id; ///< The user id this profile refers to.
 };
 
 class IProfile final : public IProfileCommon {
@@ -228,8 +228,7 @@ public:
 
 class IManagerForApplication final : public ServiceFramework<IManagerForApplication> {
 public:
-    explicit IManagerForApplication(Common::UUID user_id)
-        : ServiceFramework("IManagerForApplication"), user_id(user_id) {
+    IManagerForApplication() : ServiceFramework("IManagerForApplication") {
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, &IManagerForApplication::CheckAvailability, "CheckAvailability"},
@@ -255,14 +254,12 @@ private:
     }
 
     void GetAccountId(Kernel::HLERequestContext& ctx) {
-        LOG_DEBUG(Service_ACC, "called");
-
+        LOG_WARNING(Service_ACC, "(STUBBED) called");
+        // Should return a nintendo account ID
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(RESULT_SUCCESS);
-        rb.PushRaw<u64>(user_id.GetNintendoID());
+        rb.PushRaw<u64>(1);
     }
-
-    Common::UUID user_id;
 };
 
 void Module::Interface::GetUserCount(Kernel::HLERequestContext& ctx) {
@@ -322,37 +319,46 @@ void Module::Interface::IsUserRegistrationRequestPermitted(Kernel::HLERequestCon
 
 void Module::Interface::InitializeApplicationInfo(Kernel::HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
+    auto pid = rp.Pop<u64>();
 
-    LOG_DEBUG(Service_ACC, "called");
+    LOG_DEBUG(Service_ACC, "called, process_id={}", pid);
     IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(InitializeApplicationInfoBase());
+    rb.Push(InitializeApplicationInfoBase(pid));
 }
 
 void Module::Interface::InitializeApplicationInfoRestricted(Kernel::HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
+    auto pid = rp.Pop<u64>();
 
-    LOG_WARNING(Service_ACC, "(Partial implementation) called");
+    LOG_WARNING(Service_ACC, "(Partial implementation) called, process_id={}", pid);
 
     // TODO(ogniK): We require checking if the user actually owns the title and what not. As of
     // currently, we assume the user owns the title. InitializeApplicationInfoBase SHOULD be called
     // first then we do extra checks if the game is a digital copy.
 
     IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(InitializeApplicationInfoBase());
+    rb.Push(InitializeApplicationInfoBase(pid));
 }
 
-ResultCode Module::Interface::InitializeApplicationInfoBase() {
+ResultCode Module::Interface::InitializeApplicationInfoBase(u64 process_id) {
     if (application_info) {
         LOG_ERROR(Service_ACC, "Application already initialized");
         return ERR_ACCOUNTINFO_ALREADY_INITIALIZED;
     }
 
-    // TODO(ogniK): This should be changed to reflect the target process for when we have multiple
-    // processes emulated. As we don't actually have pid support we should assume we're just using
-    // our own process
-    const auto& current_process = system.Kernel().CurrentProcess();
-    const auto launch_property =
-        system.GetARPManager().GetLaunchProperty(current_process->GetTitleID());
+    const auto& list = system.Kernel().GetProcessList();
+    const auto iter = std::find_if(list.begin(), list.end(), [&process_id](const auto& process) {
+        return process->GetProcessID() == process_id;
+    });
+
+    if (iter == list.end()) {
+        LOG_ERROR(Service_ACC, "Failed to find process ID");
+        application_info.application_type = ApplicationType::Unknown;
+
+        return ERR_ACCOUNTINFO_BAD_APPLICATION;
+    }
+
+    const auto launch_property = system.GetARPManager().GetLaunchProperty((*iter)->GetTitleID());
 
     if (launch_property.Failed()) {
         LOG_ERROR(Service_ACC, "Failed to get launch property");
@@ -366,12 +372,10 @@ ResultCode Module::Interface::InitializeApplicationInfoBase() {
     case FileSys::StorageId::Host:
     case FileSys::StorageId::NandUser:
     case FileSys::StorageId::SdCard:
-    case FileSys::StorageId::None: // Yuzu specific, differs from hardware
         application_info.application_type = ApplicationType::Digital;
         break;
     default:
-        LOG_ERROR(Service_ACC, "Invalid game storage ID! storage_id={}",
-                  launch_property->base_game_storage_id);
+        LOG_ERROR(Service_ACC, "Invalid game storage ID");
         return ERR_ACCOUNTINFO_BAD_APPLICATION;
     }
 
@@ -385,7 +389,7 @@ void Module::Interface::GetBaasAccountManagerForApplication(Kernel::HLERequestCo
     LOG_DEBUG(Service_ACC, "called");
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface<IManagerForApplication>(profile_manager->GetLastOpenedUser());
+    rb.PushIpcInterface<IManagerForApplication>();
 }
 
 void Module::Interface::IsUserAccountSwitchLocked(Kernel::HLERequestContext& ctx) {
@@ -424,17 +428,6 @@ void Module::Interface::GetProfileEditor(Kernel::HLERequestContext& ctx) {
     rb.PushIpcInterface<IProfileEditor>(user_id, *profile_manager);
 }
 
-void Module::Interface::ListQualifiedUsers(Kernel::HLERequestContext& ctx) {
-    LOG_DEBUG(Service_ACC, "called");
-
-    // All users should be qualified. We don't actually have parental control or anything to do with
-    // nintendo online currently. We're just going to assume the user running the game has access to
-    // the game regardless of parental control settings.
-    ctx.WriteBuffer(profile_manager->GetAllUsers());
-    IPC::ResponseBuilder rb{ctx, 2};
-    rb.Push(RESULT_SUCCESS);
-}
-
 void Module::Interface::TrySelectUserWithoutInteraction(Kernel::HLERequestContext& ctx) {
     LOG_DEBUG(Service_ACC, "called");
     // A u8 is passed into this function which we can safely ignore. It's to determine if we have
@@ -449,7 +442,7 @@ void Module::Interface::TrySelectUserWithoutInteraction(Kernel::HLERequestContex
     const auto user_list = profile_manager->GetAllUsers();
     if (std::all_of(user_list.begin(), user_list.end(),
                     [](const auto& user) { return user.uuid == Common::INVALID_UUID; })) {
-        rb.Push(RESULT_UNKNOWN); // TODO(ogniK): Find the correct error code
+        rb.Push(ResultCode(-1)); // TODO(ogniK): Find the correct error code
         rb.PushRaw<u128>(Common::INVALID_UUID);
         return;
     }

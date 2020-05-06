@@ -5,8 +5,9 @@
 #pragma once
 
 #include <atomic>
-#include <memory>
 #include <string>
+
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 
 #include "common/common_types.h"
 
@@ -29,10 +30,14 @@ enum class HandleType : u32 {
     ServerPort,
     ClientSession,
     ServerSession,
-    Session,
 };
 
-class Object : NonCopyable, public std::enable_shared_from_this<Object> {
+enum class ResetType {
+    Automatic, ///< Reset automatically on object acquisition
+    Manual,    ///< Never reset automatically
+};
+
+class Object : NonCopyable {
 public:
     explicit Object(KernelCore& kernel);
     virtual ~Object();
@@ -61,24 +66,35 @@ protected:
     KernelCore& kernel;
 
 private:
+    friend void intrusive_ptr_add_ref(Object*);
+    friend void intrusive_ptr_release(Object*);
+
+    std::atomic<u32> ref_count{0};
     std::atomic<u32> object_id{0};
 };
 
-template <typename T>
-std::shared_ptr<T> SharedFrom(T* raw) {
-    if (raw == nullptr)
-        return nullptr;
-    return std::static_pointer_cast<T>(raw->shared_from_this());
+// Special functions used by boost::instrusive_ptr to do automatic ref-counting
+inline void intrusive_ptr_add_ref(Object* object) {
+    object->ref_count.fetch_add(1, std::memory_order_relaxed);
 }
+
+inline void intrusive_ptr_release(Object* object) {
+    if (object->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        delete object;
+    }
+}
+
+template <typename T>
+using SharedPtr = boost::intrusive_ptr<T>;
 
 /**
  * Attempts to downcast the given Object pointer to a pointer to T.
  * @return Derived pointer to the object, or `nullptr` if `object` isn't of type T.
  */
 template <typename T>
-inline std::shared_ptr<T> DynamicObjectCast(std::shared_ptr<Object> object) {
+inline SharedPtr<T> DynamicObjectCast(SharedPtr<Object> object) {
     if (object != nullptr && object->GetHandleType() == T::HANDLE_TYPE) {
-        return std::static_pointer_cast<T>(object);
+        return boost::static_pointer_cast<T>(object);
     }
     return nullptr;
 }

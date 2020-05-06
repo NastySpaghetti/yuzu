@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -58,7 +57,7 @@ public:
     const Layer& GetLayer(std::size_t index) const;
 
     /// Gets the readable vsync event.
-    std::shared_ptr<Kernel::ReadableEvent> GetVSyncEvent() const;
+    Kernel::SharedPtr<Kernel::ReadableEvent> GetVSyncEvent() const;
 
     /// Signals the internal vsync event.
     void SignalVSyncEvent();
@@ -69,12 +68,6 @@ public:
     /// @param buffer_queue The buffer queue for the layer instance to use.
     ///
     void CreateLayer(u64 id, NVFlinger::BufferQueue& buffer_queue);
-
-    /// Closes and removes a layer from this display with the given ID.
-    ///
-    /// @param id           The ID assigned to the layer to close.
-    ///
-    void CloseLayer(u64 id);
 
     /// Attempts to find a layer with the given ID.
     ///
@@ -98,7 +91,7 @@ private:
     u64 id;
     std::string name;
 
-    std::vector<std::shared_ptr<Layer>> layers;
+    std::vector<Layer> layers;
     Kernel::EventPair vsync_event;
 };
 

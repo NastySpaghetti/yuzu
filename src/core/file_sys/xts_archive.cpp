@@ -7,13 +7,12 @@
 #include <cstring>
 #include <regex>
 #include <string>
-
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
-
+#include "common/assert.h"
 #include "common/file_util.h"
 #include "common/hex_util.h"
-#include "common/string_util.h"
+#include "common/logging/log.h"
 #include "core/crypto/aes_util.h"
 #include "core/crypto/xts_encryption_layer.h"
 #include "core/file_sys/partition_filesystem.h"
@@ -54,15 +53,18 @@ NAX::NAX(VirtualFile file_) : header(std::make_unique<NAXHeader>()), file(std::m
         return;
     }
 
-    const std::string two_dir = Common::ToUpper(match[1]);
-    const std::string nca_id = Common::ToLower(match[2]);
+    std::string two_dir = match[1];
+    std::string nca_id = match[2];
+    std::transform(two_dir.begin(), two_dir.end(), two_dir.begin(), ::toupper);
+    std::transform(nca_id.begin(), nca_id.end(), nca_id.begin(), ::tolower);
+
     status = Parse(fmt::format("/registered/{}/{}.nca", two_dir, nca_id));
 }
 
 NAX::NAX(VirtualFile file_, std::array<u8, 0x10> nca_id)
     : header(std::make_unique<NAXHeader>()), file(std::move(file_)) {
     Core::Crypto::SHA256Hash hash{};
-    mbedtls_sha256_ret(nca_id.data(), nca_id.size(), hash.data(), 0);
+    mbedtls_sha256(nca_id.data(), nca_id.size(), hash.data(), 0);
     status = Parse(fmt::format("/registered/000000{:02X}/{}.nca", hash[0],
                                Common::HexToString(nca_id, false)));
 }
@@ -91,7 +93,8 @@ Loader::ResultStatus NAX::Parse(std::string_view path) {
     std::size_t i = 0;
     for (; i < sd_keys.size(); ++i) {
         std::array<Core::Crypto::Key128, 2> nax_keys{};
-        if (!CalculateHMAC256(nax_keys.data(), sd_keys[i].data(), 0x10, path.data(), path.size())) {
+        if (!CalculateHMAC256(nax_keys.data(), sd_keys[i].data(), 0x10, std::string(path).c_str(),
+                              path.size())) {
             return Loader::ResultStatus::ErrorNAXKeyHMACFailed;
         }
 

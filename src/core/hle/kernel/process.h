@@ -8,14 +8,14 @@
 #include <cstddef>
 #include <list>
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include "common/common_types.h"
 #include "core/hle/kernel/address_arbiter.h"
 #include "core/hle/kernel/handle_table.h"
 #include "core/hle/kernel/mutex.h"
 #include "core/hle/kernel/process_capability.h"
-#include "core/hle/kernel/synchronization_object.h"
+#include "core/hle/kernel/vm_manager.h"
+#include "core/hle/kernel/wait_object.h"
 #include "core/hle/result.h"
 
 namespace Core {
@@ -34,10 +34,6 @@ class Thread;
 class TLSPage;
 
 struct CodeSet;
-
-namespace Memory {
-class PageTable;
-}
 
 enum class MemoryRegion : u16 {
     APPLICATION = 1,
@@ -63,11 +59,8 @@ enum class ProcessStatus {
     DebugBreak,
 };
 
-class Process final : public SynchronizationObject {
+class Process final : public WaitObject {
 public:
-    explicit Process(Core::System& system);
-    ~Process() override;
-
     enum : u64 {
         /// Lowest allowed process ID for a kernel initial process.
         InitialKIPIDMin = 1,
@@ -88,8 +81,7 @@ public:
 
     static constexpr std::size_t RANDOM_ENTROPY_SIZE = 4;
 
-    static std::shared_ptr<Process> Create(Core::System& system, std::string name,
-                                           ProcessType type);
+    static SharedPtr<Process> Create(Core::System& system, std::string name, ProcessType type);
 
     std::string GetTypeName() const override {
         return "Process";
@@ -103,14 +95,14 @@ public:
         return HANDLE_TYPE;
     }
 
-    /// Gets a reference to the process' page table.
-    Memory::PageTable& PageTable() {
-        return *page_table;
+    /// Gets a reference to the process' memory manager.
+    Kernel::VMManager& VMManager() {
+        return vm_manager;
     }
 
-    /// Gets const a reference to the process' page table.
-    const Memory::PageTable& PageTable() const {
-        return *page_table;
+    /// Gets a const reference to the process' memory manager.
+    const Kernel::VMManager& VMManager() const {
+        return vm_manager;
     }
 
     /// Gets a reference to the process' handle table.
@@ -164,7 +156,7 @@ public:
     }
 
     /// Gets the resource limit descriptor for this process
-    std::shared_ptr<ResourceLimit> GetResourceLimit() const;
+    SharedPtr<ResourceLimit> GetResourceLimit() const;
 
     /// Gets the ideal CPU core ID for this process
     u8 GetIdealCore() const {
@@ -240,15 +232,6 @@ public:
         return thread_list;
     }
 
-    /// Insert a thread into the condition variable wait container
-    void InsertConditionVariableThread(std::shared_ptr<Thread> thread);
-
-    /// Remove a thread from the condition variable wait container
-    void RemoveConditionVariableThread(std::shared_ptr<Thread> thread);
-
-    /// Obtain all condition variable threads waiting for some address
-    std::vector<std::shared_ptr<Thread>> GetConditionVariableThreads(VAddr cond_var_addr);
-
     /// Registers a thread as being created under this process,
     /// adding it to this process' thread list.
     void RegisterThread(const Thread* thread);
@@ -276,7 +259,7 @@ public:
      * @returns RESULT_SUCCESS if all relevant metadata was able to be
      *          loaded and parsed. Otherwise, an error code is returned.
      */
-    ResultCode LoadFromMetadata(const FileSys::ProgramMetadata& metadata, std::size_t code_size);
+    ResultCode LoadFromMetadata(const FileSys::ProgramMetadata& metadata);
 
     /**
      * Starts the main application thread for this process.
@@ -292,7 +275,7 @@ public:
      */
     void PrepareForTermination();
 
-    void LoadModule(CodeSet code_set, VAddr base_addr);
+    void LoadModule(CodeSet module_, VAddr base_addr);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
     // Thread-local storage management
@@ -304,6 +287,9 @@ public:
     void FreeTLSRegion(VAddr tls_address);
 
 private:
+    explicit Process(Core::System& system);
+    ~Process() override;
+
     /// Checks if the specified thread should wait until this process is available.
     bool ShouldWait(const Thread* thread) const override;
 
@@ -316,10 +302,16 @@ private:
     void ChangeStatus(ProcessStatus new_status);
 
     /// Allocates the main thread stack for the process, given the stack size in bytes.
-    ResultCode AllocateMainThreadStack(std::size_t stack_size);
+    void AllocateMainThreadStack(u64 stack_size);
 
-    /// Memory manager for this process
-    std::unique_ptr<Memory::PageTable> page_table;
+    /// Memory manager for this process.
+    Kernel::VMManager vm_manager;
+
+    /// Size of the main thread's stack in bytes.
+    u64 main_thread_stack_size = 0;
+
+    /// Size of the loaded code memory in bytes.
+    u64 code_memory_size = 0;
 
     /// Current status of the process
     ProcessStatus status{};
@@ -336,7 +328,7 @@ private:
     u32 system_resource_size = 0;
 
     /// Resource limit descriptor for this process
-    std::shared_ptr<ResourceLimit> resource_limit;
+    SharedPtr<ResourceLimit> resource_limit;
 
     /// The ideal CPU core for this process, threads are scheduled on this core by default.
     u8 ideal_core = 0;
@@ -355,6 +347,10 @@ private:
     /// By default, we currently assume this is true, unless otherwise
     /// specified by metadata provided to the process during loading.
     bool is_64bit_process = true;
+
+    /// Whether or not this process is signaled. This occurs
+    /// upon the process changing to a different state.
+    bool is_signaled = false;
 
     /// Total running time for the process in ticks.
     u64 total_process_running_time_ticks = 0;
@@ -379,26 +375,11 @@ private:
     /// List of threads that are running with this process as their owner.
     std::list<const Thread*> thread_list;
 
-    /// List of threads waiting for a condition variable
-    std::unordered_map<VAddr, std::list<std::shared_ptr<Thread>>> cond_var_threads;
-
     /// System context
     Core::System& system;
 
     /// Name of this process
     std::string name;
-
-    /// Address of the top of the main thread's stack
-    VAddr main_thread_stack_top{};
-
-    /// Size of the main thread's stack
-    std::size_t main_thread_stack_size{};
-
-    /// Memory usage capacity for the process
-    std::size_t memory_usage_capacity{};
-
-    /// Process total image size
-    std::size_t image_size{};
 };
 
 } // namespace Kernel

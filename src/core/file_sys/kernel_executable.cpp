@@ -147,7 +147,7 @@ std::vector<u32> KIP::GetKernelCapabilities() const {
 }
 
 s32 KIP::GetMainThreadPriority() const {
-    return static_cast<s32>(header.main_thread_priority);
+    return header.main_thread_priority;
 }
 
 u32 KIP::GetMainThreadStackSize() const {

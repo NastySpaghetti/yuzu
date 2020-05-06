@@ -26,11 +26,11 @@
     path = externals/mbedtls
     url = https://github.com/DarkLordZach/mbedtls
 [submodule "opus"]
-    path = externals/opus/opus
-    url = https://github.com/xiph/opus.git
+    path = externals/opus
+    url = https://github.com/ogniK5377/opus.git
 [submodule "soundtouch"]
-    path = externals/soundtouch
-    url = https://github.com/citra-emu/ext-soundtouch.git
+	path = externals/soundtouch
+	url = https://github.com/citra-emu/ext-soundtouch.git
 [submodule "libressl"]
     path = externals/libressl
     url = https://github.com/citra-emu/ext-libressl-portable.git
@@ -47,8 +47,8 @@
     path = externals/sirit
     url = https://github.com/ReinUsesLisp/sirit
 [submodule "libzip"]
-    path = externals/libzip/libzip
-    url = https://github.com/nih-at/libzip.git
+    path = externals/libzip
+    url = https://github.com/DarkLordZach/libzip
 [submodule "zlib"]
-    path = externals/zlib/zlib
-    url = https://github.com/madler/zlib.git
+    path = externals/zlib
+    url = https://github.com/madler/zlib

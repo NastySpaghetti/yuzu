@@ -1,13 +1,11 @@
 steps:
   - template: ./release-download.yml
   - task: GitHubRelease@0
-    displayName: 'GitHub Release'
     inputs:
       action: 'create'
-      title: '$(ReleasePrefix) $(DisplayVersion)'
+      title: 'yuzu $(BuildName) #$(Build.BuildId)'
       assets: '$(Build.ArtifactStagingDirectory)/*'
       gitHubConnection: $(GitHubReleaseConnectionName)
       repositoryName: '$(Build.Repository.Name)'
       target: '$(Build.SourceVersion)'
-      tagSource: manual
-      tag: $(BuildName)-$(DisplayPrefix)-$(DisplayVersion)
+      tagSource: 'auto'

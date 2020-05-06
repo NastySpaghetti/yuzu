@@ -44,10 +44,6 @@ u32 nvhost_gpu::ioctl(Ioctl command, const std::vector<u8>& input, const std::ve
         return GetWaitbase(input, output);
     case IoctlCommand::IocChannelSetTimeoutCommand:
         return ChannelSetTimeout(input, output);
-    case IoctlCommand::IocChannelSetTimeslice:
-        return ChannelSetTimeslice(input, output);
-    default:
-        break;
     }
 
     if (command.group == NVGPU_IOCTL_MAGIC) {
@@ -193,8 +189,8 @@ u32 nvhost_gpu::KickoffPB(const std::vector<u8>& input, std::vector<u8>& output,
         std::memcpy(entries.data(), input2.data(),
                     params.num_entries * sizeof(Tegra::CommandListHeader));
     } else {
-        system.Memory().ReadBlock(params.address, entries.data(),
-                                  params.num_entries * sizeof(Tegra::CommandListHeader));
+        Memory::ReadBlock(params.address, entries.data(),
+                          params.num_entries * sizeof(Tegra::CommandListHeader));
     }
     UNIMPLEMENTED_IF(params.flags.add_wait.Value() != 0);
     UNIMPLEMENTED_IF(params.flags.add_increment.Value() != 0);
@@ -226,16 +222,6 @@ u32 nvhost_gpu::ChannelSetTimeout(const std::vector<u8>& input, std::vector<u8>&
     IoctlChannelSetTimeout params{};
     std::memcpy(&params, input.data(), sizeof(IoctlChannelSetTimeout));
     LOG_INFO(Service_NVDRV, "called, timeout=0x{:X}", params.timeout);
-
-    return 0;
-}
-
-u32 nvhost_gpu::ChannelSetTimeslice(const std::vector<u8>& input, std::vector<u8>& output) {
-    IoctlSetTimeslice params{};
-    std::memcpy(&params, input.data(), sizeof(IoctlSetTimeslice));
-    LOG_INFO(Service_NVDRV, "called, timeslice=0x{:X}", params.timeslice);
-
-    channel_timeslice = params.timeslice;
 
     return 0;
 }

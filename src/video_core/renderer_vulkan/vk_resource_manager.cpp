@@ -6,27 +6,15 @@
 #include <optional>
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "video_core/renderer_vulkan/declarations.h"
 #include "video_core/renderer_vulkan/vk_device.h"
 #include "video_core/renderer_vulkan/vk_resource_manager.h"
-#include "video_core/renderer_vulkan/wrapper.h"
 
 namespace Vulkan {
-
-namespace {
 
 // TODO(Rodrigo): Fine tune these numbers.
 constexpr std::size_t COMMAND_BUFFER_POOL_SIZE = 0x1000;
 constexpr std::size_t FENCES_GROW_STEP = 0x40;
-
-VkFenceCreateInfo BuildFenceCreateInfo() {
-    VkFenceCreateInfo fence_ci;
-    fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fence_ci.pNext = nullptr;
-    fence_ci.flags = 0;
-    return fence_ci;
-}
-
-} // Anonymous namespace
 
 class CommandBufferPool final : public VKFencedPool {
 public:
@@ -34,60 +22,62 @@ public:
         : VKFencedPool(COMMAND_BUFFER_POOL_SIZE), device{device} {}
 
     void Allocate(std::size_t begin, std::size_t end) override {
+        const auto dev = device.GetLogical();
+        const auto& dld = device.GetDispatchLoader();
+        const u32 graphics_family = device.GetGraphicsFamily();
+
+        auto pool = std::make_unique<Pool>();
+
         // Command buffers are going to be commited, recorded, executed every single usage cycle.
         // They are also going to be reseted when commited.
-        VkCommandPoolCreateInfo command_pool_ci;
-        command_pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-        command_pool_ci.pNext = nullptr;
-        command_pool_ci.flags =
-            VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        command_pool_ci.queueFamilyIndex = device.GetGraphicsFamily();
+        const auto pool_flags = vk::CommandPoolCreateFlagBits::eTransient |
+                                vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        const vk::CommandPoolCreateInfo cmdbuf_pool_ci(pool_flags, graphics_family);
+        pool->handle = dev.createCommandPoolUnique(cmdbuf_pool_ci, nullptr, dld);
 
-        Pool& pool = pools.emplace_back();
-        pool.handle = device.GetLogical().CreateCommandPool(command_pool_ci);
-        pool.cmdbufs = pool.handle.Allocate(COMMAND_BUFFER_POOL_SIZE);
+        const vk::CommandBufferAllocateInfo cmdbuf_ai(*pool->handle,
+                                                      vk::CommandBufferLevel::ePrimary,
+                                                      static_cast<u32>(COMMAND_BUFFER_POOL_SIZE));
+        pool->cmdbufs =
+            dev.allocateCommandBuffersUnique<std::allocator<UniqueCommandBuffer>>(cmdbuf_ai, dld);
+
+        pools.push_back(std::move(pool));
     }
 
-    VkCommandBuffer Commit(VKFence& fence) {
+    vk::CommandBuffer Commit(VKFence& fence) {
         const std::size_t index = CommitResource(fence);
         const auto pool_index = index / COMMAND_BUFFER_POOL_SIZE;
         const auto sub_index = index % COMMAND_BUFFER_POOL_SIZE;
-        return pools[pool_index].cmdbufs[sub_index];
+        return *pools[pool_index]->cmdbufs[sub_index];
     }
 
 private:
     struct Pool {
-        vk::CommandPool handle;
-        vk::CommandBuffers cmdbufs;
+        UniqueCommandPool handle;
+        std::vector<UniqueCommandBuffer> cmdbufs;
     };
 
     const VKDevice& device;
-    std::vector<Pool> pools;
+
+    std::vector<std::unique_ptr<Pool>> pools;
 };
 
 VKResource::VKResource() = default;
 
 VKResource::~VKResource() = default;
 
-VKFence::VKFence(const VKDevice& device)
-    : device{device}, handle{device.GetLogical().CreateFence(BuildFenceCreateInfo())} {}
+VKFence::VKFence(const VKDevice& device, UniqueFence handle)
+    : device{device}, handle{std::move(handle)} {}
 
 VKFence::~VKFence() = default;
 
 void VKFence::Wait() {
-    switch (const VkResult result = handle.Wait()) {
-    case VK_SUCCESS:
-        return;
-    case VK_ERROR_DEVICE_LOST:
-        device.ReportLoss();
-        [[fallthrough]];
-    default:
-        throw vk::Exception(result);
-    }
+    const auto dev = device.GetLogical();
+    const auto& dld = device.GetDispatchLoader();
+    dev.waitForFences({*handle}, true, std::numeric_limits<u64>::max(), dld);
 }
 
 void VKFence::Release() {
-    ASSERT(is_owned);
     is_owned = false;
 }
 
@@ -107,11 +97,13 @@ bool VKFence::Tick(bool gpu_wait, bool owner_wait) {
         return false;
     }
 
+    const auto dev = device.GetLogical();
+    const auto& dld = device.GetDispatchLoader();
     if (gpu_wait) {
         // Wait for the fence if it has been requested.
-        (void)handle.Wait();
+        dev.waitForFences({*handle}, true, std::numeric_limits<u64>::max(), dld);
     } else {
-        if (handle.GetStatus() != VK_SUCCESS) {
+        if (dev.getFenceStatus(*handle, dld) != vk::Result::eSuccess) {
             // Vulkan fence is not ready, not much it can do here
             return false;
         }
@@ -124,7 +116,7 @@ bool VKFence::Tick(bool gpu_wait, bool owner_wait) {
     protected_resources.clear();
 
     // Prepare fence for reusage.
-    handle.Reset();
+    dev.resetFences({*handle}, dld);
     is_used = false;
     return true;
 }
@@ -141,31 +133,7 @@ void VKFence::Unprotect(VKResource* resource) {
     protected_resources.erase(it);
 }
 
-void VKFence::RedirectProtection(VKResource* old_resource, VKResource* new_resource) noexcept {
-    std::replace(std::begin(protected_resources), std::end(protected_resources), old_resource,
-                 new_resource);
-}
-
 VKFenceWatch::VKFenceWatch() = default;
-
-VKFenceWatch::VKFenceWatch(VKFence& initial_fence) {
-    Watch(initial_fence);
-}
-
-VKFenceWatch::VKFenceWatch(VKFenceWatch&& rhs) noexcept {
-    fence = std::exchange(rhs.fence, nullptr);
-    if (fence) {
-        fence->RedirectProtection(&rhs, this);
-    }
-}
-
-VKFenceWatch& VKFenceWatch::operator=(VKFenceWatch&& rhs) noexcept {
-    fence = std::exchange(rhs.fence, nullptr);
-    if (fence) {
-        fence->RedirectProtection(&rhs, this);
-    }
-    return *this;
-}
 
 VKFenceWatch::~VKFenceWatch() {
     if (fence) {
@@ -297,16 +265,21 @@ VKFence& VKResourceManager::CommitFence() {
     return *found_fence;
 }
 
-VkCommandBuffer VKResourceManager::CommitCommandBuffer(VKFence& fence) {
+vk::CommandBuffer VKResourceManager::CommitCommandBuffer(VKFence& fence) {
     return command_buffer_pool->Commit(fence);
 }
 
 void VKResourceManager::GrowFences(std::size_t new_fences_count) {
+    const auto dev = device.GetLogical();
+    const auto& dld = device.GetDispatchLoader();
+    const vk::FenceCreateInfo fence_ci;
+
     const std::size_t previous_size = fences.size();
     fences.resize(previous_size + new_fences_count);
 
-    std::generate(fences.begin() + previous_size, fences.end(),
-                  [this] { return std::make_unique<VKFence>(device); });
+    std::generate(fences.begin() + previous_size, fences.end(), [&]() {
+        return std::make_unique<VKFence>(device, dev.createFenceUnique(fence_ci, nullptr, dld));
+    });
 }
 
 } // namespace Vulkan

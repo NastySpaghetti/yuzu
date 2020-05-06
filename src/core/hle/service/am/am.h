@@ -12,8 +12,7 @@
 
 namespace Kernel {
 class KernelCore;
-class TransferMemory;
-} // namespace Kernel
+}
 
 namespace Service::NVFlinger {
 class NVFlinger;
@@ -55,8 +54,8 @@ public:
     explicit AppletMessageQueue(Kernel::KernelCore& kernel);
     ~AppletMessageQueue();
 
-    const std::shared_ptr<Kernel::ReadableEvent>& GetMesssageRecieveEvent() const;
-    const std::shared_ptr<Kernel::ReadableEvent>& GetOperationModeChangedEvent() const;
+    const Kernel::SharedPtr<Kernel::ReadableEvent>& GetMesssageRecieveEvent() const;
+    const Kernel::SharedPtr<Kernel::ReadableEvent>& GetOperationModeChangedEvent() const;
     void PushMessage(AppletMessage msg);
     AppletMessage PopMessage();
     std::size_t GetMessageCount() const;
@@ -148,7 +147,6 @@ private:
     void GetAccumulatedSuspendedTickValue(Kernel::HLERequestContext& ctx);
     void GetAccumulatedSuspendedTickChangedEvent(Kernel::HLERequestContext& ctx);
 
-    Core::System& system;
     std::shared_ptr<NVFlinger::NVFlinger> nvflinger;
     Kernel::EventPair launchable_event;
     Kernel::EventPair accumulated_suspended_tick_changed_event;
@@ -156,6 +154,8 @@ private:
     u32 idle_time_detection_extension = 0;
     u64 num_fatal_sections_entered = 0;
     bool is_auto_sleep_disabled = false;
+
+    Core::System& system;
 };
 
 class ICommonStateGetter final : public ServiceFramework<ICommonStateGetter> {
@@ -182,48 +182,26 @@ private:
     void GetOperationMode(Kernel::HLERequestContext& ctx);
     void GetPerformanceMode(Kernel::HLERequestContext& ctx);
     void GetBootMode(Kernel::HLERequestContext& ctx);
-    void IsVrModeEnabled(Kernel::HLERequestContext& ctx);
-    void SetVrModeEnabled(Kernel::HLERequestContext& ctx);
-    void SetLcdBacklighOffEnabled(Kernel::HLERequestContext& ctx);
-    void EndVrModeEx(Kernel::HLERequestContext& ctx);
     void GetDefaultDisplayResolution(Kernel::HLERequestContext& ctx);
     void SetCpuBoostMode(Kernel::HLERequestContext& ctx);
 
     Core::System& system;
     std::shared_ptr<AppletMessageQueue> msg_queue;
-    bool vr_mode_state{};
-};
-
-class IStorageImpl {
-public:
-    virtual ~IStorageImpl();
-    virtual std::vector<u8>& GetData() = 0;
-    virtual const std::vector<u8>& GetData() const = 0;
-    virtual std::size_t GetSize() const = 0;
 };
 
 class IStorage final : public ServiceFramework<IStorage> {
 public:
-    explicit IStorage(std::vector<u8>&& buffer);
+    explicit IStorage(std::vector<u8> buffer);
     ~IStorage() override;
 
-    std::vector<u8>& GetData() {
-        return impl->GetData();
-    }
-
-    const std::vector<u8>& GetData() const {
-        return impl->GetData();
-    }
-
-    std::size_t GetSize() const {
-        return impl->GetSize();
-    }
+    const std::vector<u8>& GetData() const;
 
 private:
-    void Register();
     void Open(Kernel::HLERequestContext& ctx);
 
-    std::shared_ptr<IStorageImpl> impl;
+    std::vector<u8> buffer;
+
+    friend class IStorageAccessor;
 };
 
 class IStorageAccessor final : public ServiceFramework<IStorageAccessor> {
@@ -275,32 +253,21 @@ private:
     void BeginBlockingHomeButton(Kernel::HLERequestContext& ctx);
     void EndBlockingHomeButton(Kernel::HLERequestContext& ctx);
     void EnableApplicationCrashReport(Kernel::HLERequestContext& ctx);
-    void InitializeApplicationCopyrightFrameBuffer(Kernel::HLERequestContext& ctx);
-    void SetApplicationCopyrightImage(Kernel::HLERequestContext& ctx);
-    void SetApplicationCopyrightVisibility(Kernel::HLERequestContext& ctx);
-    void QueryApplicationPlayStatistics(Kernel::HLERequestContext& ctx);
-    void QueryApplicationPlayStatisticsByUid(Kernel::HLERequestContext& ctx);
     void GetGpuErrorDetectedSystemEvent(Kernel::HLERequestContext& ctx);
-    void GetFriendInvitationStorageChannelEvent(Kernel::HLERequestContext& ctx);
 
     bool launch_popped_application_specific = false;
     bool launch_popped_account_preselect = false;
     Kernel::EventPair gpu_error_detected_event;
-    Kernel::EventPair friend_invitation_storage_channel_event;
     Core::System& system;
 };
 
 class IHomeMenuFunctions final : public ServiceFramework<IHomeMenuFunctions> {
 public:
-    explicit IHomeMenuFunctions(Kernel::KernelCore& kernel);
+    IHomeMenuFunctions();
     ~IHomeMenuFunctions() override;
 
 private:
     void RequestToGetForeground(Kernel::HLERequestContext& ctx);
-    void GetPopFromGeneralChannelEvent(Kernel::HLERequestContext& ctx);
-
-    Kernel::EventPair pop_from_general_channel_event;
-    Kernel::KernelCore& kernel;
 };
 
 class IGlobalStateController final : public ServiceFramework<IGlobalStateController> {

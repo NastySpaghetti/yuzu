@@ -5,10 +5,7 @@
 #pragma once
 
 #include <memory>
-#include <vector>
-#include <QString>
 #include <QWidget>
-#include "core/settings.h"
 
 namespace Ui {
 class ConfigureGraphics;
@@ -30,16 +27,7 @@ private:
     void SetConfiguration();
 
     void UpdateBackgroundColorButton(QColor color);
-    void UpdateDeviceComboBox();
-    void UpdateDeviceSelection(int device);
-
-    void RetrieveVulkanDevices();
-
-    Settings::RendererBackend GetCurrentGraphicsBackend() const;
 
     std::unique_ptr<Ui::ConfigureGraphics> ui;
     QColor bg_color;
-
-    std::vector<QString> vulkan_devices;
-    u32 vulkan_device{};
 };

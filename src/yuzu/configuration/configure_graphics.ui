@@ -7,73 +7,32 @@
     <x>0</x>
     <y>0</y>
     <width>400</width>
-    <height>321</height>
+    <height>300</height>
    </rect>
   </property>
   <property name="windowTitle">
    <string>Form</string>
   </property>
-  <layout class="QVBoxLayout" name="verticalLayout_1">
+  <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <layout class="QVBoxLayout" name="verticalLayout_2">
-     <item>
-      <widget class="QGroupBox" name="groupBox_2">
-       <property name="title">
-        <string>API Settings</string>
-       </property>
-       <layout class="QVBoxLayout" name="verticalLayout_3">
-        <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_4">
-          <item>
-           <widget class="QLabel" name="label_2">
-            <property name="text">
-             <string>API:</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QComboBox" name="api">
-            <item>
-             <property name="text">
-              <string notr="true">OpenGL</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string notr="true">Vulkan</string>
-             </property>
-            </item>
-           </widget>
-          </item>
-         </layout>
-        </item>
-        <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_5">
-          <item>
-           <widget class="QLabel" name="label_3">
-            <property name="text">
-             <string>Device:</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QComboBox" name="device"/>
-          </item>
-         </layout>
-        </item>
-       </layout>
-      </widget>
-     </item>
+    <layout class="QVBoxLayout" name="verticalLayout_3">
      <item>
       <widget class="QGroupBox" name="groupBox">
        <property name="title">
-        <string>Graphics Settings</string>
+        <string>Graphics</string>
        </property>
-       <layout class="QVBoxLayout" name="verticalLayout_4">
+       <layout class="QVBoxLayout" name="verticalLayout_2">
         <item>
          <widget class="QCheckBox" name="use_disk_shader_cache">
           <property name="text">
            <string>Use disk shader cache</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QCheckBox" name="use_accurate_gpu_emulation">
+          <property name="text">
+           <string>Use accurate GPU emulation (slow)</string>
           </property>
          </widget>
         </item>
@@ -85,11 +44,18 @@
          </widget>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_2">
+         <widget class="QCheckBox" name="force_30fps_mode">
+          <property name="text">
+           <string>Force 30 FPS mode</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout">
           <item>
            <widget class="QLabel" name="label">
             <property name="text">
-             <string>Internal Resolution:</string>
+             <string>Internal Resolution</string>
             </property>
            </widget>
           </item>
@@ -97,27 +63,27 @@
            <widget class="QComboBox" name="resolution_factor_combobox">
             <item>
              <property name="text">
-              <string>Auto (Window Size)</string>
+              <string>Profile Scanner (Native)</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>Native (1280x720)</string>
+              <string>Native (1280x720/1920x1080)</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>2x Native (2560x1440)</string>
+              <string>2x Native (2560x1440/3840x2160)</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>3x Native (3840x2160)</string>
+              <string>3x Native (3840x2160/5760x3240)</string>
              </property>
             </item>
             <item>
              <property name="text">
-              <string>4x Native (5120x2880)</string>
+              <string>4x Native (5120x2880/7680x4320)</string>
              </property>
             </item>
            </widget>
@@ -126,41 +92,6 @@
         </item>
         <item>
          <layout class="QHBoxLayout" name="horizontalLayout_6">
-          <item>
-           <widget class="QLabel" name="ar_label">
-            <property name="text">
-             <string>Aspect Ratio:</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QComboBox" name="aspect_ratio_combobox">
-            <item>
-             <property name="text">
-              <string>Default (16:9)</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Force 4:3</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Force 21:9</string>
-             </property>
-            </item>
-            <item>
-             <property name="text">
-              <string>Stretch to Window</string>
-             </property>
-            </item>
-           </widget>
-          </item>
-         </layout>
-        </item>
-        <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_3">
           <item>
            <widget class="QLabel" name="bg_label">
             <property name="text">

@@ -7,44 +7,44 @@
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/core_timing_util.h"
-#include "core/hardware_properties.h"
 #include "core/memory.h"
 #include "core/tools/freezer.h"
 
 namespace Tools {
+
 namespace {
 
-constexpr s64 MEMORY_FREEZER_TICKS = static_cast<s64>(Core::Hardware::BASE_CLOCK_RATE / 60);
+constexpr s64 MEMORY_FREEZER_TICKS = static_cast<s64>(Core::Timing::BASE_CLOCK_RATE / 60);
 
-u64 MemoryReadWidth(Core::Memory::Memory& memory, u32 width, VAddr addr) {
+u64 MemoryReadWidth(u32 width, VAddr addr) {
     switch (width) {
     case 1:
-        return memory.Read8(addr);
+        return Memory::Read8(addr);
     case 2:
-        return memory.Read16(addr);
+        return Memory::Read16(addr);
     case 4:
-        return memory.Read32(addr);
+        return Memory::Read32(addr);
     case 8:
-        return memory.Read64(addr);
+        return Memory::Read64(addr);
     default:
         UNREACHABLE();
         return 0;
     }
 }
 
-void MemoryWriteWidth(Core::Memory::Memory& memory, u32 width, VAddr addr, u64 value) {
+void MemoryWriteWidth(u32 width, VAddr addr, u64 value) {
     switch (width) {
     case 1:
-        memory.Write8(addr, static_cast<u8>(value));
+        Memory::Write8(addr, static_cast<u8>(value));
         break;
     case 2:
-        memory.Write16(addr, static_cast<u16>(value));
+        Memory::Write16(addr, static_cast<u16>(value));
         break;
     case 4:
-        memory.Write32(addr, static_cast<u32>(value));
+        Memory::Write32(addr, static_cast<u32>(value));
         break;
     case 8:
-        memory.Write64(addr, value);
+        Memory::Write64(addr, value);
         break;
     default:
         UNREACHABLE();
@@ -53,9 +53,8 @@ void MemoryWriteWidth(Core::Memory::Memory& memory, u32 width, VAddr addr, u64 v
 
 } // Anonymous namespace
 
-Freezer::Freezer(Core::Timing::CoreTiming& core_timing_, Core::Memory::Memory& memory_)
-    : core_timing{core_timing_}, memory{memory_} {
-    event = Core::Timing::CreateEvent(
+Freezer::Freezer(Core::Timing::CoreTiming& core_timing) : core_timing(core_timing) {
+    event = core_timing.RegisterEvent(
         "MemoryFreezer::FrameCallback",
         [this](u64 userdata, s64 cycles_late) { FrameCallback(userdata, cycles_late); });
     core_timing.ScheduleEvent(MEMORY_FREEZER_TICKS, event);
@@ -90,7 +89,7 @@ void Freezer::Clear() {
 u64 Freezer::Freeze(VAddr address, u32 width) {
     std::lock_guard lock{entries_mutex};
 
-    const auto current_value = MemoryReadWidth(memory, width, address);
+    const auto current_value = MemoryReadWidth(width, address);
     entries.push_back({address, width, current_value});
 
     LOG_DEBUG(Common_Memory,
@@ -170,7 +169,7 @@ void Freezer::FrameCallback(u64 userdata, s64 cycles_late) {
         LOG_DEBUG(Common_Memory,
                   "Enforcing memory freeze at address={:016X}, value={:016X}, width={:02X}",
                   entry.address, entry.value, entry.width);
-        MemoryWriteWidth(memory, entry.width, entry.address, entry.value);
+        MemoryWriteWidth(entry.width, entry.address, entry.value);
     }
 
     core_timing.ScheduleEvent(MEMORY_FREEZER_TICKS - cycles_late, event);
@@ -182,7 +181,7 @@ void Freezer::FillEntryReads() {
     LOG_DEBUG(Common_Memory, "Updating memory freeze entries to current values.");
 
     for (auto& entry : entries) {
-        entry.value = MemoryReadWidth(memory, entry.width, entry.address);
+        entry.value = MemoryReadWidth(entry.width, entry.address);
     }
 }
 

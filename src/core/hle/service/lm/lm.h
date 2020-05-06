@@ -4,13 +4,13 @@
 
 #pragma once
 
-namespace Core {
-class System;
+namespace Service::SM {
+class ServiceManager;
 }
 
 namespace Service::LM {
 
 /// Registers all LM services with the specified service manager.
-void InstallInterfaces(Core::System& system);
+void InstallInterfaces(SM::ServiceManager& service_manager);
 
 } // namespace Service::LM

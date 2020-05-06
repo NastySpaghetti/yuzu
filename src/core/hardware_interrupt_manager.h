@@ -4,8 +4,6 @@
 
 #pragma once
 
-#include <memory>
-
 #include "common/common_types.h"
 
 namespace Core {
@@ -27,7 +25,7 @@ public:
 
 private:
     Core::System& system;
-    std::shared_ptr<Core::Timing::EventType> gpu_interrupt_event;
+    Core::Timing::EventType* gpu_interrupt_event{};
 };
 
 } // namespace Core::Hardware

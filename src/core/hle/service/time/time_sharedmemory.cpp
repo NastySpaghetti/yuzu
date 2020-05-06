@@ -3,55 +3,66 @@
 // Refer to the license.txt file included.
 
 #include "core/core.h"
-#include "core/core_timing.h"
-#include "core/core_timing_util.h"
-#include "core/hardware_properties.h"
-#include "core/hle/kernel/kernel.h"
-#include "core/hle/service/time/clock_types.h"
-#include "core/hle/service/time/steady_clock_core.h"
 #include "core/hle/service/time/time_sharedmemory.h"
 
 namespace Service::Time {
-
-static constexpr std::size_t SHARED_MEMORY_SIZE{0x1000};
+const std::size_t SHARED_MEMORY_SIZE = 0x1000;
 
 SharedMemory::SharedMemory(Core::System& system) : system(system) {
-    shared_memory_holder = SharedFrom(&system.Kernel().GetTimeSharedMem());
-    std::memset(shared_memory_holder->GetPointer(), 0, SHARED_MEMORY_SIZE);
+    shared_memory_holder = Kernel::SharedMemory::Create(
+        system.Kernel(), nullptr, SHARED_MEMORY_SIZE, Kernel::MemoryPermission::ReadWrite,
+        Kernel::MemoryPermission::Read, 0, Kernel::MemoryRegion::BASE, "Time:SharedMemory");
+
+    // Seems static from 1.0.0 -> 8.1.0. Specific games seem to check this value and crash
+    // if it's set to anything else
+    shared_memory_format.format_version = 14;
+    std::memcpy(shared_memory_holder->GetPointer(), &shared_memory_format, sizeof(Format));
 }
 
 SharedMemory::~SharedMemory() = default;
 
-std::shared_ptr<Kernel::SharedMemory> SharedMemory::GetSharedMemoryHolder() const {
+Kernel::SharedPtr<Kernel::SharedMemory> SharedMemory::GetSharedMemoryHolder() const {
     return shared_memory_holder;
 }
 
-void SharedMemory::SetupStandardSteadyClock(Core::System& system,
-                                            const Common::UUID& clock_source_id,
-                                            Clock::TimeSpanType current_time_point) {
-    const Clock::TimeSpanType ticks_time_span{Clock::TimeSpanType::FromTicks(
-        Core::Timing::CpuCyclesToClockCycles(system.CoreTiming().GetTicks()),
-        Core::Hardware::CNTFREQ)};
-    const Clock::SteadyClockContext context{
-        static_cast<u64>(current_time_point.nanoseconds - ticks_time_span.nanoseconds),
-        clock_source_id};
+void SharedMemory::SetStandardSteadyClockTimepoint(const SteadyClockTimePoint& timepoint) {
     shared_memory_format.standard_steady_clock_timepoint.StoreData(
-        shared_memory_holder->GetPointer(), context);
+        shared_memory_holder->GetPointer(), timepoint);
 }
 
-void SharedMemory::UpdateLocalSystemClockContext(const Clock::SystemClockContext& context) {
+void SharedMemory::SetStandardLocalSystemClockContext(const SystemClockContext& context) {
     shared_memory_format.standard_local_system_clock_context.StoreData(
         shared_memory_holder->GetPointer(), context);
 }
 
-void SharedMemory::UpdateNetworkSystemClockContext(const Clock::SystemClockContext& context) {
+void SharedMemory::SetStandardNetworkSystemClockContext(const SystemClockContext& context) {
     shared_memory_format.standard_network_system_clock_context.StoreData(
         shared_memory_holder->GetPointer(), context);
 }
 
-void SharedMemory::SetAutomaticCorrectionEnabled(bool is_enabled) {
+void SharedMemory::SetStandardUserSystemClockAutomaticCorrectionEnabled(bool enabled) {
     shared_memory_format.standard_user_system_clock_automatic_correction.StoreData(
-        shared_memory_holder->GetPointer(), is_enabled);
+        shared_memory_holder->GetPointer(), enabled);
+}
+
+SteadyClockTimePoint SharedMemory::GetStandardSteadyClockTimepoint() {
+    return shared_memory_format.standard_steady_clock_timepoint.ReadData(
+        shared_memory_holder->GetPointer());
+}
+
+SystemClockContext SharedMemory::GetStandardLocalSystemClockContext() {
+    return shared_memory_format.standard_local_system_clock_context.ReadData(
+        shared_memory_holder->GetPointer());
+}
+
+SystemClockContext SharedMemory::GetStandardNetworkSystemClockContext() {
+    return shared_memory_format.standard_network_system_clock_context.ReadData(
+        shared_memory_holder->GetPointer());
+}
+
+bool SharedMemory::GetStandardUserSystemClockAutomaticCorrectionEnabled() {
+    return shared_memory_format.standard_user_system_clock_automatic_correction.ReadData(
+        shared_memory_holder->GetPointer());
 }
 
 } // namespace Service::Time

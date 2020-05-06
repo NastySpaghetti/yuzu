@@ -25,8 +25,6 @@
 
 namespace Core {
 
-constexpr char WEB_API_URL[] = "https://api.yuzu-emu.org";
-
 static u64 GenerateTelemetryId() {
     u64 telemetry_id{};
 
@@ -46,28 +44,6 @@ static u64 GenerateTelemetryId() {
     mbedtls_entropy_free(&entropy);
 
     return telemetry_id;
-}
-
-static const char* TranslateRenderer(Settings::RendererBackend backend) {
-    switch (backend) {
-    case Settings::RendererBackend::OpenGL:
-        return "OpenGL";
-    case Settings::RendererBackend::Vulkan:
-        return "Vulkan";
-    }
-    return "Unknown";
-}
-
-static const char* TranslateGPUAccuracyLevel(Settings::GPUAccuracy backend) {
-    switch (backend) {
-    case Settings::GPUAccuracy::Normal:
-        return "Normal";
-    case Settings::GPUAccuracy::High:
-        return "High";
-    case Settings::GPUAccuracy::Extreme:
-        return "Extreme";
-    }
-    return "Unknown";
 }
 
 u64 GetTelemetryId() {
@@ -118,7 +94,7 @@ u64 RegenerateTelemetryId() {
 
 bool VerifyLogin(const std::string& username, const std::string& token) {
 #ifdef ENABLE_WEB_SERVICE
-    return WebService::VerifyLogin(WEB_API_URL, username, token);
+    return WebService::VerifyLogin(Settings::values.web_api_url, username, token);
 #else
     return false;
 #endif
@@ -135,7 +111,7 @@ TelemetrySession::~TelemetrySession() {
 
 #ifdef ENABLE_WEB_SERVICE
     auto backend = std::make_unique<WebService::TelemetryJson>(
-        WEB_API_URL, Settings::values.yuzu_username, Settings::values.yuzu_token);
+        Settings::values.web_api_url, Settings::values.yuzu_username, Settings::values.yuzu_token);
 #else
     auto backend = std::make_unique<Telemetry::NullVisitor>();
 #endif
@@ -167,9 +143,9 @@ void TelemetrySession::AddInitialInfo(Loader::AppLoader& app_loader) {
         app_loader.ReadTitle(name);
 
         if (name.empty()) {
-            const auto metadata = FileSys::PatchManager(program_id).GetControlMetadata();
-            if (metadata.first != nullptr) {
-                name = metadata.first->GetApplicationName();
+            auto [nacp, icon_file] = FileSys::PatchManager(program_id).GetControlMetadata();
+            if (nacp != nullptr) {
+                name = nacp->GetApplicationName();
             }
         }
 
@@ -189,27 +165,30 @@ void TelemetrySession::AddInitialInfo(Loader::AppLoader& app_loader) {
     Telemetry::AppendOSInfo(field_collection);
 
     // Log user configuration information
-    constexpr auto field_type = Telemetry::FieldType::UserConfig;
-    AddField(field_type, "Audio_SinkId", Settings::values.sink_id);
-    AddField(field_type, "Audio_EnableAudioStretching", Settings::values.enable_audio_stretching);
-    AddField(field_type, "Core_UseMultiCore", Settings::values.use_multi_core);
-    AddField(field_type, "Renderer_Backend", TranslateRenderer(Settings::values.renderer_backend));
-    AddField(field_type, "Renderer_ResolutionFactor", Settings::values.resolution_factor);
-    AddField(field_type, "Renderer_UseFrameLimit", Settings::values.use_frame_limit);
-    AddField(field_type, "Renderer_FrameLimit", Settings::values.frame_limit);
-    AddField(field_type, "Renderer_UseDiskShaderCache", Settings::values.use_disk_shader_cache);
-    AddField(field_type, "Renderer_GPUAccuracyLevel",
-             TranslateGPUAccuracyLevel(Settings::values.gpu_accuracy));
-    AddField(field_type, "Renderer_UseAsynchronousGpuEmulation",
+    AddField(Telemetry::FieldType::UserConfig, "Audio_SinkId", Settings::values.sink_id);
+    AddField(Telemetry::FieldType::UserConfig, "Audio_EnableAudioStretching",
+             Settings::values.enable_audio_stretching);
+    AddField(Telemetry::FieldType::UserConfig, "Core_UseMultiCore",
+             Settings::values.use_multi_core);
+    AddField(Telemetry::FieldType::UserConfig, "Renderer_ResolutionFactor",
+             Settings::values.resolution_factor);
+    AddField(Telemetry::FieldType::UserConfig, "Renderer_UseFrameLimit",
+             Settings::values.use_frame_limit);
+    AddField(Telemetry::FieldType::UserConfig, "Renderer_FrameLimit", Settings::values.frame_limit);
+    AddField(Telemetry::FieldType::UserConfig, "Renderer_UseDiskShaderCache",
+             Settings::values.use_disk_shader_cache);
+    AddField(Telemetry::FieldType::UserConfig, "Renderer_UseAccurateGpuEmulation",
+             Settings::values.use_accurate_gpu_emulation);
+    AddField(Telemetry::FieldType::UserConfig, "Renderer_UseAsynchronousGpuEmulation",
              Settings::values.use_asynchronous_gpu_emulation);
-    AddField(field_type, "Renderer_UseVsync", Settings::values.use_vsync);
-    AddField(field_type, "System_UseDockedMode", Settings::values.use_docked_mode);
+    AddField(Telemetry::FieldType::UserConfig, "System_UseDockedMode",
+             Settings::values.use_docked_mode);
 }
 
 bool TelemetrySession::SubmitTestcase() {
 #ifdef ENABLE_WEB_SERVICE
     auto backend = std::make_unique<WebService::TelemetryJson>(
-        WEB_API_URL, Settings::values.yuzu_username, Settings::values.yuzu_token);
+        Settings::values.web_api_url, Settings::values.yuzu_username, Settings::values.yuzu_token);
     field_collection.Accept(*backend);
     return backend->SubmitTestcase();
 #else

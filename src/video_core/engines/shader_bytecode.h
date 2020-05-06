@@ -82,10 +82,6 @@ union Attribute {
         Position = 7,
         Attribute_0 = 8,
         Attribute_31 = 39,
-        FrontColor = 40,
-        FrontSecondaryColor = 41,
-        BackColor = 42,
-        BackSecondaryColor = 43,
         ClipDistances0123 = 44,
         ClipDistances4567 = 45,
         PointCoord = 46,
@@ -93,8 +89,6 @@ union Attribute {
         // shader, and a tuple of (TessCoord.x, TessCoord.y, TessCoord.z, ~) when inside a Tess Eval
         // shader.
         TessCoordInstanceIDVertexID = 47,
-        TexCoord_0 = 48,
-        TexCoord_7 = 55,
         // This attribute contains a tuple of (Unk, Unk, Unk, gl_FrontFacing) when inside a fragment
         // shader. It is unknown what the other values contain.
         FrontFacing = 63,
@@ -104,11 +98,10 @@ union Attribute {
         BitField<20, 10, u64> immediate;
         BitField<22, 2, u64> element;
         BitField<24, 6, Index> index;
-        BitField<31, 1, u64> patch;
         BitField<47, 3, AttributeSize> size;
 
         bool IsPhysical() const {
-            return patch == 0 && element == 0 && static_cast<u64>(index.Value()) == 0;
+            return element == 0 && static_cast<u64>(index.Value()) == 0;
         }
     } fmt20;
 
@@ -221,28 +214,6 @@ enum class F2fRoundingOp : u64 {
     Trunc = 11,
 };
 
-enum class AtomicOp : u64 {
-    Add = 0,
-    Min = 1,
-    Max = 2,
-    Inc = 3,
-    Dec = 4,
-    And = 5,
-    Or = 6,
-    Xor = 7,
-    Exch = 8,
-    SafeAdd = 10,
-};
-
-enum class GlobalAtomicType : u64 {
-    U32 = 0,
-    S32 = 1,
-    U64 = 2,
-    F32_FTZ_RN = 3,
-    F16x2_FTZ_RN = 4,
-    S64 = 5,
-};
-
 enum class UniformType : u64 {
     UnsignedByte = 0,
     SignedByte = 1,
@@ -264,13 +235,6 @@ enum class StoreType : u64 {
     Bits128 = 6,
 };
 
-enum class AtomicType : u64 {
-    U32 = 0,
-    S32 = 1,
-    U64 = 2,
-    S64 = 3,
-};
-
 enum class IMinMaxExchange : u64 {
     None = 0,
     XLo = 1,
@@ -288,23 +252,6 @@ enum class VideoType : u64 {
 enum class VmadShr : u64 {
     Shr7 = 1,
     Shr15 = 2,
-};
-
-enum class VmnmxType : u64 {
-    Bits8,
-    Bits16,
-    Bits32,
-};
-
-enum class VmnmxOperation : u64 {
-    Mrg_16H = 0,
-    Mrg_16L = 1,
-    Mrg_8B0 = 2,
-    Mrg_8B2 = 3,
-    Acc = 4,
-    Min = 5,
-    Max = 6,
-    Nop = 7,
 };
 
 enum class XmadMode : u64 {
@@ -435,15 +382,6 @@ enum class IsberdMode : u64 {
 };
 
 enum class IsberdShift : u64 { None = 0, U16 = 1, B32 = 2 };
-
-enum class MembarType : u64 {
-    CTA = 0,
-    GL = 1,
-    SYS = 2,
-    VC = 3,
-};
-
-enum class MembarUnknown : u64 { Default = 0, IVALLD = 1, IVALLT = 2, IVALLTD = 3 };
 
 enum class HalfType : u64 {
     H0_H1 = 0,
@@ -635,27 +573,13 @@ enum class ShuffleOperation : u64 {
     Bfly = 3, // shuffleXorNV
 };
 
-enum class ShfType : u64 {
-    Bits32 = 0,
-    U64 = 2,
-    S64 = 3,
-};
-
-enum class ShfXmode : u64 {
-    None = 0,
-    HI = 1,
-    X = 2,
-    XHI = 3,
-};
-
 union Instruction {
-    constexpr Instruction& operator=(const Instruction& instr) {
+    Instruction& operator=(const Instruction& instr) {
         value = instr.value;
         return *this;
     }
 
     constexpr Instruction(u64 value) : value{value} {}
-    constexpr Instruction(const Instruction& instr) : value(instr.value) {}
 
     BitField<0, 8, Register> gpr0;
     BitField<8, 8, Register> gpr8;
@@ -690,14 +614,6 @@ union Instruction {
         BitField<20, 5, u64> index_imm;
         BitField<34, 13, u64> mask_imm;
     } shfl;
-
-    union {
-        BitField<44, 1, u64> ftz;
-        BitField<39, 2, u64> tab5cb8_2;
-        BitField<38, 1, u64> ndv;
-        BitField<47, 1, u64> cc;
-        BitField<28, 8, u64> swizzle;
-    } fswzadd;
 
     union {
         BitField<8, 8, Register> gpr;
@@ -801,30 +717,21 @@ union Instruction {
     } shr;
 
     union {
-        BitField<37, 2, ShfType> type;
-        BitField<48, 2, ShfXmode> xmode;
-        BitField<50, 1, u64> wrap;
-        BitField<20, 6, u64> immediate;
-    } shf;
-
-    union {
         BitField<39, 5, u64> shift_amount;
         BitField<48, 1, u64> negate_b;
         BitField<49, 1, u64> negate_a;
     } alu_integer;
 
     union {
-        BitField<43, 1, u64> x;
-    } iadd;
-
-    union {
         BitField<39, 1, u64> ftz;
         BitField<32, 1, u64> saturate;
         BitField<49, 2, HalfMerge> merge;
 
+        BitField<43, 1, u64> negate_a;
         BitField<44, 1, u64> abs_a;
         BitField<47, 2, HalfType> type_a;
 
+        BitField<31, 1, u64> negate_b;
         BitField<30, 1, u64> abs_b;
         BitField<28, 2, HalfType> type_b;
 
@@ -885,12 +792,6 @@ union Instruction {
     } popc;
 
     union {
-        BitField<41, 1, u64> sh;
-        BitField<40, 1, u64> invert;
-        BitField<48, 1, u64> is_signed;
-    } flo;
-
-    union {
         BitField<39, 3, u64> pred;
         BitField<42, 1, u64> neg_pred;
     } sel;
@@ -925,9 +826,14 @@ union Instruction {
     } fadd32i;
 
     union {
-        BitField<40, 1, u64> brev;
-        BitField<47, 1, u64> rd_cc;
-        BitField<48, 1, u64> is_signed;
+        BitField<20, 8, u64> shift_position;
+        BitField<28, 8, u64> shift_length;
+        BitField<48, 1, u64> negate_b;
+        BitField<49, 1, u64> negate_a;
+
+        u64 GetLeftShiftValue() const {
+            return 32 - (shift_position + shift_length);
+        }
     } bfe;
 
     union {
@@ -1007,28 +913,6 @@ union Instruction {
         BitField<48, 3, UniformType> type;
         BitField<46, 2, u64> cache_mode;
     } stg;
-
-    union {
-        BitField<23, 3, AtomicOp> operation;
-        BitField<48, 1, u64> extended;
-        BitField<20, 3, GlobalAtomicType> type;
-    } red;
-
-    union {
-        BitField<52, 4, AtomicOp> operation;
-        BitField<49, 3, GlobalAtomicType> type;
-        BitField<28, 20, s64> offset;
-    } atom;
-
-    union {
-        BitField<52, 4, AtomicOp> operation;
-        BitField<28, 2, AtomicType> type;
-        BitField<30, 22, s64> offset;
-
-        s32 GetImmediateOffset() const {
-            return static_cast<s32>(offset << 2);
-        }
-    } atoms;
 
     union {
         BitField<32, 1, PhysicalAttributeDirection> direction;
@@ -1143,7 +1027,7 @@ union Instruction {
         BitField<40, 1, R2pMode> mode;
         BitField<41, 2, u64> byte;
         BitField<20, 7, u64> immediate_mask;
-    } p2r_r2p;
+    } r2p;
 
     union {
         BitField<39, 3, u64> pred39;
@@ -1157,11 +1041,6 @@ union Instruction {
         BitField<54, 1, u64> abs_a;
         BitField<55, 1, u64> ftz;
     } fset;
-
-    union {
-        BitField<47, 1, u64> ftz;
-        BitField<48, 4, PredCondition> cond;
-    } fcmp;
 
     union {
         BitField<49, 1, u64> bf;
@@ -1336,7 +1215,7 @@ union Instruction {
         BitField<35, 1, u64> ndv_flag;
         BitField<49, 1, u64> nodep_flag;
         BitField<50, 1, u64> dc_flag;
-        BitField<54, 2, u64> offset_mode;
+        BitField<54, 2, u64> info;
         BitField<56, 2, u64> component;
 
         bool UsesMiscMode(TextureMiscMode mode) const {
@@ -1348,9 +1227,9 @@ union Instruction {
             case TextureMiscMode::DC:
                 return dc_flag != 0;
             case TextureMiscMode::AOFFI:
-                return offset_mode == 1;
+                return info == 1;
             case TextureMiscMode::PTP:
-                return offset_mode == 2;
+                return info == 2;
             default:
                 break;
             }
@@ -1359,37 +1238,10 @@ union Instruction {
     } tld4;
 
     union {
-        BitField<35, 1, u64> ndv_flag;
-        BitField<49, 1, u64> nodep_flag;
-        BitField<50, 1, u64> dc_flag;
-        BitField<33, 2, u64> offset_mode;
-        BitField<37, 2, u64> component;
-
-        bool UsesMiscMode(TextureMiscMode mode) const {
-            switch (mode) {
-            case TextureMiscMode::NDV:
-                return ndv_flag != 0;
-            case TextureMiscMode::NODEP:
-                return nodep_flag != 0;
-            case TextureMiscMode::DC:
-                return dc_flag != 0;
-            case TextureMiscMode::AOFFI:
-                return offset_mode == 1;
-            case TextureMiscMode::PTP:
-                return offset_mode == 2;
-            default:
-                break;
-            }
-            return false;
-        }
-    } tld4_b;
-
-    union {
         BitField<49, 1, u64> nodep_flag;
         BitField<50, 1, u64> dc_flag;
         BitField<51, 1, u64> aoffi_flag;
         BitField<52, 2, u64> component;
-        BitField<55, 1, u64> fp16_flag;
 
         bool UsesMiscMode(TextureMiscMode mode) const {
             switch (mode) {
@@ -1510,7 +1362,7 @@ union Instruction {
 
         TextureType GetTextureType() const {
             // The TLDS instruction has a weird encoding for the texture type.
-            if (texture_info <= 1) {
+            if (texture_info >= 0 && texture_info <= 1) {
                 return TextureType::Texture1D;
             }
             if (texture_info == 2 || texture_info == 8 || texture_info == 12 ||
@@ -1552,26 +1404,6 @@ union Instruction {
             return texture_info == 8;
         }
     } tlds;
-
-    union {
-        BitField<28, 1, u64> is_array;
-        BitField<29, 2, TextureType> texture_type;
-        BitField<35, 1, u64> aoffi_flag;
-        BitField<49, 1, u64> nodep_flag;
-
-        bool UsesMiscMode(TextureMiscMode mode) const {
-            switch (mode) {
-            case TextureMiscMode::AOFFI:
-                return aoffi_flag != 0;
-            case TextureMiscMode::NODEP:
-                return nodep_flag != 0;
-            default:
-                break;
-            }
-            return false;
-        }
-
-    } txd;
 
     union {
         BitField<24, 2, StoreCacheManagement> cache_management;
@@ -1620,8 +1452,7 @@ union Instruction {
             u32 value = static_cast<u32>(target);
             // The branch offset is relative to the next instruction and is stored in bytes, so
             // divide it by the size of an instruction and add 1 to it.
-            return static_cast<s32>((value ^ mask) - mask) / static_cast<s32>(sizeof(Instruction)) +
-                   1;
+            return static_cast<s32>((value ^ mask) - mask) / sizeof(Instruction) + 1;
         }
     } bra;
 
@@ -1635,8 +1466,7 @@ union Instruction {
             u32 value = static_cast<u32>(target);
             // The branch offset is relative to the next instruction and is stored in bytes, so
             // divide it by the size of an instruction and add 1 to it.
-            return static_cast<s32>((value ^ mask) - mask) / static_cast<s32>(sizeof(Instruction)) +
-                   1;
+            return static_cast<s32>((value ^ mask) - mask) / sizeof(Instruction) + 1;
         }
     } brx;
 
@@ -1651,11 +1481,6 @@ union Instruction {
         BitField<33, 2, IsberdMode> mode;
         BitField<47, 2, IsberdShift> shift;
     } isberd;
-
-    union {
-        BitField<8, 2, MembarType> type;
-        BitField<0, 2, MembarUnknown> unknown;
-    } membar;
 
     union {
         BitField<48, 1, u64> signed_a;
@@ -1677,42 +1502,6 @@ union Instruction {
     } vmad;
 
     union {
-        BitField<54, 1, u64> is_dest_signed;
-        BitField<48, 1, u64> is_src_a_signed;
-        BitField<49, 1, u64> is_src_b_signed;
-        BitField<37, 2, u64> src_format_a;
-        BitField<29, 2, u64> src_format_b;
-        BitField<56, 1, u64> mx;
-        BitField<55, 1, u64> sat;
-        BitField<36, 2, u64> selector_a;
-        BitField<28, 2, u64> selector_b;
-        BitField<50, 1, u64> is_op_b_register;
-        BitField<51, 3, VmnmxOperation> operation;
-
-        VmnmxType SourceFormatA() const {
-            switch (src_format_a) {
-            case 0b11:
-                return VmnmxType::Bits32;
-            case 0b10:
-                return VmnmxType::Bits16;
-            default:
-                return VmnmxType::Bits8;
-            }
-        }
-
-        VmnmxType SourceFormatB() const {
-            switch (src_format_b) {
-            case 0b11:
-                return VmnmxType::Bits32;
-            case 0b10:
-                return VmnmxType::Bits16;
-            default:
-                return VmnmxType::Bits8;
-            }
-        }
-    } vmnmx;
-
-    union {
         BitField<20, 16, u64> imm20_16;
         BitField<35, 1, u64> high_b_rr; // used on RR
         BitField<36, 1, u64> product_shift_left;
@@ -1728,11 +1517,11 @@ union Instruction {
     } xmad;
 
     union {
-        BitField<20, 14, u64> shifted_offset;
+        BitField<20, 14, u64> offset;
         BitField<34, 5, u64> index;
 
         u64 GetOffset() const {
-            return shifted_offset * 4;
+            return offset * 4;
         }
     } cbuf34;
 
@@ -1774,13 +1563,10 @@ public:
         BRK,
         DEPBAR,
         VOTE,
-        VOTE_VTG,
         SHFL,
-        FSWZADD,
         BFE_C,
         BFE_R,
         BFE_IMM,
-        BFI_RC,
         BFI_IMM_R,
         BRA,
         BRX,
@@ -1794,12 +1580,9 @@ public:
         ST_A,
         ST_L,
         ST_S,
-        ST,    // Store in generic memory
-        STG,   // Store in global memory
-        RED,   // Reduction operation
-        ATOM,  // Atomic operation on global memory
-        ATOMS, // Atomic operation on shared memory
-        AL2P,  // Transforms attribute memory into physical memory
+        ST,   // Store in generic memory
+        STG,  // Store in global memory
+        AL2P, // Transforms attribute memory into physical memory
         TEX,
         TEX_B,  // Texture Load Bindless
         TXQ,    // Texture Query
@@ -1807,13 +1590,10 @@ public:
         TEXS,   // Texture Fetch with scalar/non-vec4 source/destinations
         TLD,    // Texture Load
         TLDS,   // Texture Load with scalar/non-vec4 source/destinations
-        TLD4,   // Texture Gather 4
-        TLD4_B, // Texture Gather 4 Bindless
+        TLD4,   // Texture Load 4
         TLD4S,  // Texture Load 4 with scalar / non - vec4 source / destinations
         TMML_B, // Texture Mip Map Level
         TMML,   // Texture Mip Map Level
-        TXD,    // Texture Gradient/Load with Derivates
-        TXD_B,  // Texture Gradient/Load with Derivates Bindless
         SUST,   // Surface Store
         SULD,   // Surface Load
         SUATOM, // Surface Atomic Operation
@@ -1822,11 +1602,8 @@ public:
         IPA,
         OUT_R, // Emit vertex/primitive
         ISBERD,
-        BAR,
-        MEMBAR,
         VMAD,
         VSETP,
-        VMNMX,
         FFMA_IMM, // Fused Multiply and Add
         FFMA_CR,
         FFMA_RC,
@@ -1849,9 +1626,6 @@ public:
         ISCADD_C, // Scale and Add
         ISCADD_R,
         ISCADD_IMM,
-        FLO_R,
-        FLO_C,
-        FLO_IMM,
         LEA_R1,
         LEA_R2,
         LEA_RZ,
@@ -1881,8 +1655,6 @@ public:
         ICMP_R,
         ICMP_CR,
         ICMP_IMM,
-        FCMP_RR,
-        FCMP_RC,
         MUFU,  // Multi-Function Operator
         RRO_C, // Range Reduction Operator
         RRO_R,
@@ -1909,7 +1681,7 @@ public:
         MOV_C,
         MOV_R,
         MOV_IMM,
-        S2R,
+        MOV_SYS,
         MOV32_IMM,
         SHL_C,
         SHL_R,
@@ -1917,10 +1689,6 @@ public:
         SHR_C,
         SHR_R,
         SHR_IMM,
-        SHF_RIGHT_R,
-        SHF_RIGHT_IMM,
-        SHF_LEFT_R,
-        SHF_LEFT_IMM,
         FMNMX_C,
         FMNMX_R,
         FMNMX_IMM,
@@ -1943,7 +1711,6 @@ public:
         PSET,
         CSETP,
         R2P_IMM,
-        P2R_IMM,
         XMAD_IMM,
         XMAD_CR,
         XMAD_RC,
@@ -1993,22 +1760,22 @@ public:
 
     class Matcher {
     public:
-        constexpr Matcher(const char* const name, u16 mask, u16 expected, Id id, Type type)
+        Matcher(const char* const name, u16 mask, u16 expected, OpCode::Id id, OpCode::Type type)
             : name{name}, mask{mask}, expected{expected}, id{id}, type{type} {}
 
-        constexpr const char* GetName() const {
+        const char* GetName() const {
             return name;
         }
 
-        constexpr u16 GetMask() const {
+        u16 GetMask() const {
             return mask;
         }
 
-        constexpr Id GetId() const {
+        Id GetId() const {
             return id;
         }
 
-        constexpr Type GetType() const {
+        Type GetType() const {
             return type;
         }
 
@@ -2017,7 +1784,7 @@ public:
          * @param instruction The instruction to test
          * @returns true if the given instruction matches.
          */
-        constexpr bool Matches(u16 instruction) const {
+        bool Matches(u16 instruction) const {
             return (instruction & mask) == expected;
         }
 
@@ -2051,32 +1818,32 @@ private:
          * A '0' in a bitstring indicates that a zero must be present at that bit position.
          * A '1' in a bitstring indicates that a one must be present at that bit position.
          */
-        static constexpr auto GetMaskAndExpect(const char* const bitstring) {
+        static auto GetMaskAndExpect(const char* const bitstring) {
             u16 mask = 0, expect = 0;
             for (std::size_t i = 0; i < opcode_bitsize; i++) {
                 const std::size_t bit_position = opcode_bitsize - i - 1;
                 switch (bitstring[i]) {
                 case '0':
-                    mask |= static_cast<u16>(1U << bit_position);
+                    mask |= 1 << bit_position;
                     break;
                 case '1':
-                    expect |= static_cast<u16>(1U << bit_position);
-                    mask |= static_cast<u16>(1U << bit_position);
+                    expect |= 1 << bit_position;
+                    mask |= 1 << bit_position;
                     break;
                 default:
                     // Ignore
                     break;
                 }
             }
-            return std::make_pair(mask, expect);
+            return std::make_tuple(mask, expect);
         }
 
     public:
         /// Creates a matcher that can match and parse instructions based on bitstring.
-        static constexpr auto GetMatcher(const char* const bitstring, Id op, Type type,
-                                         const char* const name) {
-            const auto [mask, expected] = GetMaskAndExpect(bitstring);
-            return Matcher(name, mask, expected, op, type);
+        static auto GetMatcher(const char* const bitstring, OpCode::Id op, OpCode::Type type,
+                               const char* const name) {
+            const auto mask_expect = GetMaskAndExpect(bitstring);
+            return Matcher(name, std::get<0>(mask_expect), std::get<1>(mask_expect), op, type);
         }
     };
 
@@ -2089,13 +1856,11 @@ private:
             INST("111000100100----", Id::BRA, Type::Flow, "BRA"),
             INST("111000100101----", Id::BRX, Type::Flow, "BRX"),
             INST("1111000011111---", Id::SYNC, Type::Flow, "SYNC"),
-            INST("111000110100----", Id::BRK, Type::Flow, "BRK"),
+            INST("111000110100---", Id::BRK, Type::Flow, "BRK"),
             INST("111000110000----", Id::EXIT, Type::Flow, "EXIT"),
             INST("1111000011110---", Id::DEPBAR, Type::Synch, "DEPBAR"),
             INST("0101000011011---", Id::VOTE, Type::Warp, "VOTE"),
-            INST("0101000011100---", Id::VOTE_VTG, Type::Warp, "VOTE_VTG"),
             INST("1110111100010---", Id::SHFL, Type::Warp, "SHFL"),
-            INST("0101000011111---", Id::FSWZADD, Type::Warp, "FSWZADD"),
             INST("1110111111011---", Id::LD_A, Type::Memory, "LD_A"),
             INST("1110111101001---", Id::LD_S, Type::Memory, "LD_S"),
             INST("1110111101000---", Id::LD_L, Type::Memory, "LD_L"),
@@ -2107,9 +1872,6 @@ private:
             INST("1110111101010---", Id::ST_L, Type::Memory, "ST_L"),
             INST("101-------------", Id::ST, Type::Memory, "ST"),
             INST("1110111011011---", Id::STG, Type::Memory, "STG"),
-            INST("1110101111111---", Id::RED, Type::Memory, "RED"),
-            INST("11101101--------", Id::ATOM, Type::Memory, "ATOM"),
-            INST("11101100--------", Id::ATOMS, Type::Memory, "ATOMS"),
             INST("1110111110100---", Id::AL2P, Type::Memory, "AL2P"),
             INST("110000----111---", Id::TEX, Type::Texture, "TEX"),
             INST("1101111010111---", Id::TEX_B, Type::Texture, "TEX_B"),
@@ -2119,12 +1881,9 @@ private:
             INST("11011100--11----", Id::TLD, Type::Texture, "TLD"),
             INST("1101-01---------", Id::TLDS, Type::Texture, "TLDS"),
             INST("110010----111---", Id::TLD4, Type::Texture, "TLD4"),
-            INST("1101111011111---", Id::TLD4_B, Type::Texture, "TLD4_B"),
-            INST("11011111-0------", Id::TLD4S, Type::Texture, "TLD4S"),
+            INST("1101111100------", Id::TLD4S, Type::Texture, "TLD4S"),
             INST("110111110110----", Id::TMML_B, Type::Texture, "TMML_B"),
             INST("1101111101011---", Id::TMML, Type::Texture, "TMML"),
-            INST("11011110011110--", Id::TXD_B, Type::Texture, "TXD_B"),
-            INST("11011110001110--", Id::TXD, Type::Texture, "TXD"),
             INST("11101011001-----", Id::SUST, Type::Image, "SUST"),
             INST("11101011000-----", Id::SULD, Type::Image, "SULD"),
             INST("1110101000------", Id::SUATOM, Type::Image, "SUATOM_D"),
@@ -2132,11 +1891,8 @@ private:
             INST("11100000--------", Id::IPA, Type::Trivial, "IPA"),
             INST("1111101111100---", Id::OUT_R, Type::Trivial, "OUT_R"),
             INST("1110111111010---", Id::ISBERD, Type::Trivial, "ISBERD"),
-            INST("1111000010101---", Id::BAR, Type::Trivial, "BAR"),
-            INST("1110111110011---", Id::MEMBAR, Type::Trivial, "MEMBAR"),
             INST("01011111--------", Id::VMAD, Type::Video, "VMAD"),
             INST("0101000011110---", Id::VSETP, Type::Video, "VSETP"),
-            INST("0011101---------", Id::VMNMX, Type::Video, "VMNMX"),
             INST("0011001-1-------", Id::FFMA_IMM, Type::Ffma, "FFMA_IMM"),
             INST("010010011-------", Id::FFMA_CR, Type::Ffma, "FFMA_CR"),
             INST("010100011-------", Id::FFMA_RC, Type::Ffma, "FFMA_RC"),
@@ -2169,9 +1925,6 @@ private:
             INST("010110110100----", Id::ICMP_R, Type::ArithmeticInteger, "ICMP_R"),
             INST("010010110100----", Id::ICMP_CR, Type::ArithmeticInteger, "ICMP_CR"),
             INST("0011011-0100----", Id::ICMP_IMM, Type::ArithmeticInteger, "ICMP_IMM"),
-            INST("0101110000110---", Id::FLO_R, Type::ArithmeticInteger, "FLO_R"),
-            INST("0100110000110---", Id::FLO_C, Type::ArithmeticInteger, "FLO_C"),
-            INST("0011100-00110---", Id::FLO_IMM, Type::ArithmeticInteger, "FLO_IMM"),
             INST("0101101111011---", Id::LEA_R2, Type::ArithmeticInteger, "LEA_R2"),
             INST("0101101111010---", Id::LEA_R1, Type::ArithmeticInteger, "LEA_R1"),
             INST("001101101101----", Id::LEA_IMM, Type::ArithmeticInteger, "LEA_IMM"),
@@ -2191,8 +1944,6 @@ private:
             INST("0101110100100---", Id::HSETP2_R, Type::HalfSetPredicate, "HSETP2_R"),
             INST("0111111-0-------", Id::HSETP2_IMM, Type::HalfSetPredicate, "HSETP2_IMM"),
             INST("0101110100011---", Id::HSET2_R, Type::HalfSet, "HSET2_R"),
-            INST("010110111010----", Id::FCMP_RR, Type::Arithmetic, "FCMP_RR"),
-            INST("010010111010----", Id::FCMP_RC, Type::Arithmetic, "FCMP_RC"),
             INST("0101000010000---", Id::MUFU, Type::Arithmetic, "MUFU"),
             INST("0100110010010---", Id::RRO_C, Type::Arithmetic, "RRO_C"),
             INST("0101110010010---", Id::RRO_R, Type::Arithmetic, "RRO_R"),
@@ -2206,7 +1957,7 @@ private:
             INST("0100110010011---", Id::MOV_C, Type::Arithmetic, "MOV_C"),
             INST("0101110010011---", Id::MOV_R, Type::Arithmetic, "MOV_R"),
             INST("0011100-10011---", Id::MOV_IMM, Type::Arithmetic, "MOV_IMM"),
-            INST("1111000011001---", Id::S2R, Type::Trivial, "S2R"),
+            INST("1111000011001---", Id::MOV_SYS, Type::Trivial, "MOV_SYS"),
             INST("000000010000----", Id::MOV32_IMM, Type::ArithmeticImmediate, "MOV32_IMM"),
             INST("0100110001100---", Id::FMNMX_C, Type::Arithmetic, "FMNMX_C"),
             INST("0101110001100---", Id::FMNMX_R, Type::Arithmetic, "FMNMX_R"),
@@ -2217,7 +1968,6 @@ private:
             INST("0100110000000---", Id::BFE_C, Type::Bfe, "BFE_C"),
             INST("0101110000000---", Id::BFE_R, Type::Bfe, "BFE_R"),
             INST("0011100-00000---", Id::BFE_IMM, Type::Bfe, "BFE_IMM"),
-            INST("0101001111110---", Id::BFI_RC, Type::Bfi, "BFI_RC"),
             INST("0011011-11110---", Id::BFI_IMM_R, Type::Bfi, "BFI_IMM_R"),
             INST("0100110001000---", Id::LOP_C, Type::ArithmeticInteger, "LOP_C"),
             INST("0101110001000---", Id::LOP_R, Type::ArithmeticInteger, "LOP_R"),
@@ -2232,13 +1982,9 @@ private:
             INST("0100110000101---", Id::SHR_C, Type::Shift, "SHR_C"),
             INST("0101110000101---", Id::SHR_R, Type::Shift, "SHR_R"),
             INST("0011100-00101---", Id::SHR_IMM, Type::Shift, "SHR_IMM"),
-            INST("0101110011111---", Id::SHF_RIGHT_R, Type::Shift, "SHF_RIGHT_R"),
-            INST("0011100-11111---", Id::SHF_RIGHT_IMM, Type::Shift, "SHF_RIGHT_IMM"),
-            INST("0101101111111---", Id::SHF_LEFT_R, Type::Shift, "SHF_LEFT_R"),
-            INST("0011011-11111---", Id::SHF_LEFT_IMM, Type::Shift, "SHF_LEFT_IMM"),
             INST("0100110011100---", Id::I2I_C, Type::Conversion, "I2I_C"),
             INST("0101110011100---", Id::I2I_R, Type::Conversion, "I2I_R"),
-            INST("0011100-11100---", Id::I2I_IMM, Type::Conversion, "I2I_IMM"),
+            INST("0011101-11100---", Id::I2I_IMM, Type::Conversion, "I2I_IMM"),
             INST("0100110010111---", Id::I2F_C, Type::Conversion, "I2F_C"),
             INST("0101110010111---", Id::I2F_R, Type::Conversion, "I2F_R"),
             INST("0011100-10111---", Id::I2F_IMM, Type::Conversion, "I2F_IMM"),
@@ -2258,7 +2004,6 @@ private:
             INST("0101000010010---", Id::PSETP, Type::PredicateSetPredicate, "PSETP"),
             INST("010100001010----", Id::CSETP, Type::PredicateSetPredicate, "CSETP"),
             INST("0011100-11110---", Id::R2P_IMM, Type::RegisterSetPredicate, "R2P_IMM"),
-            INST("0011100-11101---", Id::P2R_IMM, Type::RegisterSetPredicate, "P2R_IMM"),
             INST("0011011-00------", Id::XMAD_IMM, Type::Xmad, "XMAD_IMM"),
             INST("0100111---------", Id::XMAD_CR, Type::Xmad, "XMAD_CR"),
             INST("010100010-------", Id::XMAD_RC, Type::Xmad, "XMAD_RC"),

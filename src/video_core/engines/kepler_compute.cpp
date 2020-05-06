@@ -8,7 +8,6 @@
 #include "core/core.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
-#include "video_core/engines/shader_type.h"
 #include "video_core/memory_manager.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
@@ -39,7 +38,7 @@ void KeplerCompute::CallMethod(const GPU::MethodCall& method_call) {
         const bool is_last_call = method_call.IsLastCall();
         upload_state.ProcessData(method_call.argument, is_last_call);
         if (is_last_call) {
-            system.GPU().Maxwell3D().OnMemoryWrite();
+            system.GPU().Maxwell3D().dirty.OnMemoryWrite();
         }
         break;
     }
@@ -51,14 +50,7 @@ void KeplerCompute::CallMethod(const GPU::MethodCall& method_call) {
     }
 }
 
-void KeplerCompute::CallMultiMethod(u32 method, const u32* base_start, u32 amount,
-                                    u32 methods_pending) {
-    for (std::size_t i = 0; i < amount; i++) {
-        CallMethod({method, base_start[i], 0, methods_pending - static_cast<u32>(i)});
-    }
-}
-
-Texture::FullTextureInfo KeplerCompute::GetTexture(std::size_t offset) const {
+Tegra::Texture::FullTextureInfo KeplerCompute::GetTexture(std::size_t offset) const {
     const std::bitset<8> cbuf_mask = launch_description.const_buffer_enable_mask.Value();
     ASSERT(cbuf_mask[regs.tex_cb_index]);
 
@@ -69,44 +61,20 @@ Texture::FullTextureInfo KeplerCompute::GetTexture(std::size_t offset) const {
     ASSERT(address < texinfo.Address() + texinfo.size);
 
     const Texture::TextureHandle tex_handle{memory_manager.Read<u32>(address)};
-    return GetTextureInfo(tex_handle);
+    return GetTextureInfo(tex_handle, offset);
 }
 
-Texture::FullTextureInfo KeplerCompute::GetTextureInfo(Texture::TextureHandle tex_handle) const {
-    return Texture::FullTextureInfo{GetTICEntry(tex_handle.tic_id), GetTSCEntry(tex_handle.tsc_id)};
+Texture::FullTextureInfo KeplerCompute::GetTextureInfo(const Texture::TextureHandle tex_handle,
+                                                       std::size_t offset) const {
+    return Texture::FullTextureInfo{static_cast<u32>(offset), GetTICEntry(tex_handle.tic_id),
+                                    GetTSCEntry(tex_handle.tsc_id)};
 }
 
-u32 KeplerCompute::AccessConstBuffer32(ShaderType stage, u64 const_buffer, u64 offset) const {
-    ASSERT(stage == ShaderType::Compute);
+u32 KeplerCompute::AccessConstBuffer32(u64 const_buffer, u64 offset) const {
     const auto& buffer = launch_description.const_buffer_config[const_buffer];
     u32 result;
     std::memcpy(&result, memory_manager.GetPointer(buffer.Address() + offset), sizeof(u32));
     return result;
-}
-
-SamplerDescriptor KeplerCompute::AccessBoundSampler(ShaderType stage, u64 offset) const {
-    return AccessBindlessSampler(stage, regs.tex_cb_index, offset * sizeof(Texture::TextureHandle));
-}
-
-SamplerDescriptor KeplerCompute::AccessBindlessSampler(ShaderType stage, u64 const_buffer,
-                                                       u64 offset) const {
-    ASSERT(stage == ShaderType::Compute);
-    const auto& tex_info_buffer = launch_description.const_buffer_config[const_buffer];
-    const GPUVAddr tex_info_address = tex_info_buffer.Address() + offset;
-
-    const Texture::TextureHandle tex_handle{memory_manager.Read<u32>(tex_info_address)};
-    const Texture::FullTextureInfo tex_info = GetTextureInfo(tex_handle);
-    SamplerDescriptor result = SamplerDescriptor::FromTIC(tex_info.tic);
-    result.is_shadow.Assign(tex_info.tsc.depth_compare_enabled.Value());
-    return result;
-}
-
-VideoCore::GuestDriverProfile& KeplerCompute::AccessGuestDriverProfile() {
-    return rasterizer.AccessGuestDriverProfile();
-}
-
-const VideoCore::GuestDriverProfile& KeplerCompute::AccessGuestDriverProfile() const {
-    return rasterizer.AccessGuestDriverProfile();
 }
 
 void KeplerCompute::ProcessLaunch() {
@@ -125,6 +93,14 @@ Texture::TICEntry KeplerCompute::GetTICEntry(u32 tic_index) const {
 
     Texture::TICEntry tic_entry;
     memory_manager.ReadBlockUnsafe(tic_address_gpu, &tic_entry, sizeof(Texture::TICEntry));
+
+    const auto r_type{tic_entry.r_type.Value()};
+    const auto g_type{tic_entry.g_type.Value()};
+    const auto b_type{tic_entry.b_type.Value()};
+    const auto a_type{tic_entry.a_type.Value()};
+
+    // TODO(Subv): Different data types for separate components are not supported
+    DEBUG_ASSERT(r_type == g_type && r_type == b_type && r_type == a_type);
 
     return tic_entry;
 }

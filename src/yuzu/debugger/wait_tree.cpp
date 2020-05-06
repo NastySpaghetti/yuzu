@@ -12,8 +12,8 @@
 #include "core/hle/kernel/process.h"
 #include "core/hle/kernel/readable_event.h"
 #include "core/hle/kernel/scheduler.h"
-#include "core/hle/kernel/synchronization_object.h"
 #include "core/hle/kernel/thread.h"
+#include "core/hle/kernel/wait_object.h"
 #include "core/memory.h"
 
 WaitTreeItem::WaitTreeItem() = default;
@@ -57,7 +57,7 @@ std::size_t WaitTreeItem::Row() const {
 std::vector<std::unique_ptr<WaitTreeThread>> WaitTreeItem::MakeThreadItemList() {
     std::vector<std::unique_ptr<WaitTreeThread>> item_list;
     std::size_t row = 0;
-    auto add_threads = [&](const std::vector<std::shared_ptr<Kernel::Thread>>& threads) {
+    auto add_threads = [&](const std::vector<Kernel::SharedPtr<Kernel::Thread>>& threads) {
         for (std::size_t i = 0; i < threads.size(); ++i) {
             item_list.push_back(std::make_unique<WaitTreeThread>(*threads[i]));
             item_list.back()->row = row;
@@ -66,7 +66,10 @@ std::vector<std::unique_ptr<WaitTreeThread>> WaitTreeItem::MakeThreadItemList() 
     };
 
     const auto& system = Core::System::GetInstance();
-    add_threads(system.GlobalScheduler().GetThreadList());
+    add_threads(system.Scheduler(0).GetThreadList());
+    add_threads(system.Scheduler(1).GetThreadList());
+    add_threads(system.Scheduler(2).GetThreadList());
+    add_threads(system.Scheduler(3).GetThreadList());
 
     return item_list;
 }
@@ -80,7 +83,7 @@ QString WaitTreeText::GetText() const {
 
 WaitTreeMutexInfo::WaitTreeMutexInfo(VAddr mutex_address, const Kernel::HandleTable& handle_table)
     : mutex_address(mutex_address) {
-    mutex_value = Core::System::GetInstance().Memory().Read32(mutex_address);
+    mutex_value = Memory::Read32(mutex_address);
     owner_handle = static_cast<Kernel::Handle>(mutex_value & Kernel::Mutex::MutexOwnerMask);
     owner = handle_table.Get<Kernel::Thread>(owner_handle);
 }
@@ -115,11 +118,10 @@ std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeCallstack::GetChildren() cons
     std::vector<std::unique_ptr<WaitTreeItem>> list;
 
     constexpr std::size_t BaseRegister = 29;
-    auto& memory = Core::System::GetInstance().Memory();
-    u64 base_pointer = thread.GetContext64().cpu_registers[BaseRegister];
+    u64 base_pointer = thread.GetContext().cpu_registers[BaseRegister];
 
     while (base_pointer != 0) {
-        const u64 lr = memory.Read64(base_pointer + sizeof(u64));
+        const u64 lr = Memory::Read64(base_pointer + sizeof(u64));
         if (lr == 0) {
             break;
         }
@@ -127,15 +129,14 @@ std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeCallstack::GetChildren() cons
         list.push_back(std::make_unique<WaitTreeText>(
             tr("0x%1").arg(lr - sizeof(u32), 16, 16, QLatin1Char{'0'})));
 
-        base_pointer = memory.Read64(base_pointer);
+        base_pointer = Memory::Read64(base_pointer);
     }
 
     return list;
 }
 
-WaitTreeSynchronizationObject::WaitTreeSynchronizationObject(const Kernel::SynchronizationObject& o)
-    : object(o) {}
-WaitTreeSynchronizationObject::~WaitTreeSynchronizationObject() = default;
+WaitTreeWaitObject::WaitTreeWaitObject(const Kernel::WaitObject& o) : object(o) {}
+WaitTreeWaitObject::~WaitTreeWaitObject() = default;
 
 WaitTreeExpandableItem::WaitTreeExpandableItem() = default;
 WaitTreeExpandableItem::~WaitTreeExpandableItem() = default;
@@ -144,26 +145,25 @@ bool WaitTreeExpandableItem::IsExpandable() const {
     return true;
 }
 
-QString WaitTreeSynchronizationObject::GetText() const {
+QString WaitTreeWaitObject::GetText() const {
     return tr("[%1]%2 %3")
         .arg(object.GetObjectId())
         .arg(QString::fromStdString(object.GetTypeName()),
              QString::fromStdString(object.GetName()));
 }
 
-std::unique_ptr<WaitTreeSynchronizationObject> WaitTreeSynchronizationObject::make(
-    const Kernel::SynchronizationObject& object) {
+std::unique_ptr<WaitTreeWaitObject> WaitTreeWaitObject::make(const Kernel::WaitObject& object) {
     switch (object.GetHandleType()) {
     case Kernel::HandleType::ReadableEvent:
         return std::make_unique<WaitTreeEvent>(static_cast<const Kernel::ReadableEvent&>(object));
     case Kernel::HandleType::Thread:
         return std::make_unique<WaitTreeThread>(static_cast<const Kernel::Thread&>(object));
     default:
-        return std::make_unique<WaitTreeSynchronizationObject>(object);
+        return std::make_unique<WaitTreeWaitObject>(object);
     }
 }
 
-std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeSynchronizationObject::GetChildren() const {
+std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeWaitObject::GetChildren() const {
     std::vector<std::unique_ptr<WaitTreeItem>> list;
 
     const auto& threads = object.GetWaitingThreads();
@@ -175,8 +175,19 @@ std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeSynchronizationObject::GetChi
     return list;
 }
 
+QString WaitTreeWaitObject::GetResetTypeQString(Kernel::ResetType reset_type) {
+    switch (reset_type) {
+    case Kernel::ResetType::Automatic:
+        return tr("automatic reset");
+    case Kernel::ResetType::Manual:
+        return tr("manual reset");
+    }
+    UNREACHABLE();
+    return {};
+}
+
 WaitTreeObjectList::WaitTreeObjectList(
-    const std::vector<std::shared_ptr<Kernel::SynchronizationObject>>& list, bool w_all)
+    const std::vector<Kernel::SharedPtr<Kernel::WaitObject>>& list, bool w_all)
     : object_list(list), wait_all(w_all) {}
 
 WaitTreeObjectList::~WaitTreeObjectList() = default;
@@ -190,12 +201,11 @@ QString WaitTreeObjectList::GetText() const {
 std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeObjectList::GetChildren() const {
     std::vector<std::unique_ptr<WaitTreeItem>> list(object_list.size());
     std::transform(object_list.begin(), object_list.end(), list.begin(),
-                   [](const auto& t) { return WaitTreeSynchronizationObject::make(*t); });
+                   [](const auto& t) { return WaitTreeWaitObject::make(*t); });
     return list;
 }
 
-WaitTreeThread::WaitTreeThread(const Kernel::Thread& thread)
-    : WaitTreeSynchronizationObject(thread) {}
+WaitTreeThread::WaitTreeThread(const Kernel::Thread& thread) : WaitTreeWaitObject(thread) {}
 WaitTreeThread::~WaitTreeThread() = default;
 
 QString WaitTreeThread::GetText() const {
@@ -240,12 +250,11 @@ QString WaitTreeThread::GetText() const {
         break;
     }
 
-    const auto& context = thread.GetContext64();
+    const auto& context = thread.GetContext();
     const QString pc_info = tr(" PC = 0x%1 LR = 0x%2")
                                 .arg(context.pc, 8, 16, QLatin1Char{'0'})
                                 .arg(context.cpu_registers[30], 8, 16, QLatin1Char{'0'});
-    return QStringLiteral("%1%2 (%3) ")
-        .arg(WaitTreeSynchronizationObject::GetText(), pc_info, status);
+    return QStringLiteral("%1%2 (%3) ").arg(WaitTreeWaitObject::GetText(), pc_info, status);
 }
 
 QColor WaitTreeThread::GetColor() const {
@@ -277,7 +286,7 @@ QColor WaitTreeThread::GetColor() const {
 }
 
 std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeThread::GetChildren() const {
-    std::vector<std::unique_ptr<WaitTreeItem>> list(WaitTreeSynchronizationObject::GetChildren());
+    std::vector<std::unique_ptr<WaitTreeItem>> list(WaitTreeWaitObject::GetChildren());
 
     const auto& thread = static_cast<const Kernel::Thread&>(object);
 
@@ -318,7 +327,7 @@ std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeThread::GetChildren() const {
     }
 
     if (thread.GetStatus() == Kernel::ThreadStatus::WaitSynch) {
-        list.push_back(std::make_unique<WaitTreeObjectList>(thread.GetSynchronizationObjects(),
+        list.push_back(std::make_unique<WaitTreeObjectList>(thread.GetWaitObjects(),
                                                             thread.IsSleepingOnWait()));
     }
 
@@ -327,11 +336,20 @@ std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeThread::GetChildren() const {
     return list;
 }
 
-WaitTreeEvent::WaitTreeEvent(const Kernel::ReadableEvent& object)
-    : WaitTreeSynchronizationObject(object) {}
+WaitTreeEvent::WaitTreeEvent(const Kernel::ReadableEvent& object) : WaitTreeWaitObject(object) {}
 WaitTreeEvent::~WaitTreeEvent() = default;
 
-WaitTreeThreadList::WaitTreeThreadList(const std::vector<std::shared_ptr<Kernel::Thread>>& list)
+std::vector<std::unique_ptr<WaitTreeItem>> WaitTreeEvent::GetChildren() const {
+    std::vector<std::unique_ptr<WaitTreeItem>> list(WaitTreeWaitObject::GetChildren());
+
+    list.push_back(std::make_unique<WaitTreeText>(
+        tr("reset type = %1")
+            .arg(GetResetTypeQString(
+                static_cast<const Kernel::ReadableEvent&>(object).GetResetType()))));
+    return list;
+}
+
+WaitTreeThreadList::WaitTreeThreadList(const std::vector<Kernel::SharedPtr<Kernel::Thread>>& list)
     : thread_list(list) {}
 WaitTreeThreadList::~WaitTreeThreadList() = default;
 

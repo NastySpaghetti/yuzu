@@ -8,14 +8,11 @@
 #include <memory>
 #include <vector>
 
-#include "audio_core/behavior_info.h"
-#include "audio_core/common.h"
 #include "audio_core/stream.h"
 #include "common/common_funcs.h"
 #include "common/common_types.h"
 #include "common/swap.h"
 #include "core/hle/kernel/object.h"
-#include "core/hle/result.h"
 
 namespace Core::Timing {
 class CoreTiming;
@@ -23,10 +20,6 @@ class CoreTiming;
 
 namespace Kernel {
 class WritableEvent;
-}
-
-namespace Core::Memory {
-class Memory;
 }
 
 namespace AudioCore {
@@ -117,14 +110,6 @@ struct WaveBuffer {
 };
 static_assert(sizeof(WaveBuffer) == 0x38, "WaveBuffer has wrong size");
 
-struct VoiceResourceInformation {
-    s32_le id{};
-    std::array<float_le, MAX_MIX_BUFFERS> mix_volumes{};
-    bool in_use{};
-    INSERT_PADDING_BYTES(11);
-};
-static_assert(sizeof(VoiceResourceInformation) == 0x70, "VoiceResourceInformation has wrong size");
-
 struct VoiceInfo {
     u32_le id;
     u32_le node_id;
@@ -158,14 +143,6 @@ struct VoiceOutStatus {
     u32_le voice_drops_count;
 };
 static_assert(sizeof(VoiceOutStatus) == 0x10, "VoiceOutStatus has wrong size");
-
-struct ChannelInfoIn {
-    u32_le id;
-    std::array<float_le, 24> mix_volume;
-    bool is_used;
-    INSERT_PADDING_BYTES(11);
-};
-static_assert(sizeof(ChannelInfoIn) == 0x70, "ChannelInfoIn has wrong size");
 
 struct AuxInfo {
     std::array<u8, 24> input_mix_buffers;
@@ -208,7 +185,7 @@ struct UpdateDataHeader {
     UpdateDataHeader() {}
 
     explicit UpdateDataHeader(const AudioRendererParameter& config) {
-        revision = Common::MakeMagic('R', 'E', 'V', '8'); // 9.2.0 Revision
+        revision = Common::MakeMagic('R', 'E', 'V', '4'); // 5.1.0 Revision
         behavior_size = 0xb0;
         memory_pools_size = (config.effect_count + (config.voice_count * 4)) * 0x10;
         voices_size = config.voice_count * 0x10;
@@ -240,12 +217,12 @@ static_assert(sizeof(UpdateDataHeader) == 0x40, "UpdateDataHeader has wrong size
 
 class AudioRenderer {
 public:
-    AudioRenderer(Core::Timing::CoreTiming& core_timing, Core::Memory::Memory& memory_,
-                  AudioRendererParameter params,
-                  std::shared_ptr<Kernel::WritableEvent> buffer_event, std::size_t instance_number);
+    AudioRenderer(Core::Timing::CoreTiming& core_timing, AudioRendererParameter params,
+                  Kernel::SharedPtr<Kernel::WritableEvent> buffer_event,
+                  std::size_t instance_number);
     ~AudioRenderer();
 
-    ResultVal<std::vector<u8>> UpdateAudioRenderer(const std::vector<u8>& input_params);
+    std::vector<u8> UpdateAudioRenderer(const std::vector<u8>& input_params);
     void QueueMixedBuffer(Buffer::Tag tag);
     void ReleaseAndQueueBuffers();
     u32 GetSampleRate() const;
@@ -254,20 +231,15 @@ public:
     Stream::State GetStreamState() const;
 
 private:
-    class ChannelState;
     class EffectState;
     class VoiceState;
-    BehaviorInfo behavior_info{};
 
     AudioRendererParameter worker_params;
-    std::shared_ptr<Kernel::WritableEvent> buffer_event;
-    std::vector<ChannelState> channels;
+    Kernel::SharedPtr<Kernel::WritableEvent> buffer_event;
     std::vector<VoiceState> voices;
-    std::vector<VoiceResourceInformation> voice_resources;
     std::vector<EffectState> effects;
     std::unique_ptr<AudioOut> audio_out;
-    StreamPtr stream;
-    Core::Memory::Memory& memory;
+    AudioCore::StreamPtr stream;
 };
 
 } // namespace AudioCore

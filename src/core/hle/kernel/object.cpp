@@ -27,7 +27,6 @@ bool Object::IsWaitable() const {
     case HandleType::ResourceLimit:
     case HandleType::ClientPort:
     case HandleType::ClientSession:
-    case HandleType::Session:
         return false;
     }
 

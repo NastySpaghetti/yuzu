@@ -1,16 +1,12 @@
 trigger:
 - master
 
-variables:
-  DisplayVersion: $[counter(variables['DisplayPrefix'], 1)]
-
 stages:
 - stage: format
   displayName: 'format'
   jobs:
   - job: format
     displayName: 'clang'
-    continueOnError: true
     pool:
       vmImage: ubuntu-latest
     steps:
@@ -22,7 +18,7 @@ stages:
   - job: build
     displayName: 'windows-msvc'
     pool:
-      vmImage: windows-2019
+      vmImage: vs2017-win2016
     steps:
     - template: ./templates/sync-source.yml
       parameters:
@@ -32,12 +28,3 @@ stages:
       parameters:
         artifactSource: 'false'
         cache: $(parameters.cache)
-        version: $(DisplayVersion)
-- stage: release
-  displayName: 'release'
-  dependsOn: build
-  jobs:
-    - job: release
-      displayName: 'source'
-      steps:
-        - template: ./templates/release-private-tag.yml

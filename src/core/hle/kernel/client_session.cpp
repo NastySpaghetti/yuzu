@@ -1,4 +1,4 @@
-// Copyright 2019 yuzu emulator team
+// Copyright 2016 Citra Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -12,50 +12,29 @@
 
 namespace Kernel {
 
-ClientSession::ClientSession(KernelCore& kernel) : SynchronizationObject{kernel} {}
-
+ClientSession::ClientSession(KernelCore& kernel) : Object{kernel} {}
 ClientSession::~ClientSession() {
     // This destructor will be called automatically when the last ClientSession handle is closed by
     // the emulated application.
-    if (parent->Server()) {
-        parent->Server()->ClientDisconnected();
+
+    // A local reference to the ServerSession is necessary to guarantee it
+    // will be kept alive until after ClientDisconnected() returns.
+    SharedPtr<ServerSession> server = parent->server;
+    if (server) {
+        server->ClientDisconnected();
     }
+
+    parent->client = nullptr;
 }
 
-bool ClientSession::ShouldWait(const Thread* thread) const {
-    UNIMPLEMENTED();
-    return {};
-}
-
-void ClientSession::Acquire(Thread* thread) {
-    UNIMPLEMENTED();
-}
-
-bool ClientSession::IsSignaled() const {
-    UNIMPLEMENTED();
-    return true;
-}
-
-ResultVal<std::shared_ptr<ClientSession>> ClientSession::Create(KernelCore& kernel,
-                                                                std::shared_ptr<Session> parent,
-                                                                std::string name) {
-    std::shared_ptr<ClientSession> client_session{std::make_shared<ClientSession>(kernel)};
-
-    client_session->name = std::move(name);
-    client_session->parent = std::move(parent);
-
-    return MakeResult(std::move(client_session));
-}
-
-ResultCode ClientSession::SendSyncRequest(std::shared_ptr<Thread> thread,
-                                          Core::Memory::Memory& memory) {
+ResultCode ClientSession::SendSyncRequest(SharedPtr<Thread> thread) {
     // Keep ServerSession alive until we're done working with it.
-    if (!parent->Server()) {
+    SharedPtr<ServerSession> server = parent->server;
+    if (server == nullptr)
         return ERR_SESSION_CLOSED_BY_REMOTE;
-    }
 
     // Signal the server session that new data is available
-    return parent->Server()->HandleSyncRequest(std::move(thread), memory);
+    return server->HandleSyncRequest(std::move(thread));
 }
 
 } // namespace Kernel

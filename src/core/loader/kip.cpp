@@ -2,21 +2,18 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <cstring>
 #include "core/file_sys/kernel_executable.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/gdbstub/gdbstub.h"
 #include "core/hle/kernel/code_set.h"
-#include "core/hle/kernel/memory/page_table.h"
 #include "core/hle/kernel/process.h"
 #include "core/loader/kip.h"
-#include "core/memory.h"
 
 namespace Loader {
 
 namespace {
 constexpr u32 PageAlignSize(u32 size) {
-    return (size + Core::Memory::PAGE_MASK) & ~Core::Memory::PAGE_MASK;
+    return (size + Memory::PAGE_MASK) & ~Memory::PAGE_MASK;
 }
 } // Anonymous namespace
 
@@ -70,7 +67,7 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
                         kip->GetMainThreadCpuCore(), kip->GetMainThreadStackSize(),
                         kip->GetTitleID(), 0xFFFFFFFFFFFFFFFF, kip->GetKernelCapabilities());
 
-    const VAddr base_address = process.PageTable().GetCodeRegionStart();
+    const VAddr base_address = process.VMManager().GetCodeRegionBaseAddress();
     Kernel::CodeSet codeset;
     Kernel::PhysicalMemory program_image;
 
@@ -79,8 +76,8 @@ AppLoader::LoadResult AppLoader_KIP::Load(Kernel::Process& process) {
         segment.addr = offset;
         segment.offset = offset;
         segment.size = PageAlignSize(static_cast<u32>(data.size()));
-        program_image.resize(offset + data.size());
-        std::memcpy(program_image.data() + offset, data.data(), data.size());
+        program_image.resize(offset);
+        program_image.insert(program_image.end(), data.begin(), data.end());
     };
 
     load_segment(codeset.CodeSegment(), kip->GetTextSection(), kip->GetTextOffset());

@@ -11,7 +11,7 @@
 
 namespace Core::Timing {
 
-constexpr u64 MAX_VALUE_TO_MULTIPLY = std::numeric_limits<s64>::max() / Hardware::BASE_CLOCK_RATE;
+constexpr u64 MAX_VALUE_TO_MULTIPLY = std::numeric_limits<s64>::max() / BASE_CLOCK_RATE;
 
 s64 msToCycles(std::chrono::milliseconds ms) {
     if (static_cast<u64>(ms.count() / 1000) > MAX_VALUE_TO_MULTIPLY) {
@@ -20,9 +20,9 @@ s64 msToCycles(std::chrono::milliseconds ms) {
     }
     if (static_cast<u64>(ms.count()) > MAX_VALUE_TO_MULTIPLY) {
         LOG_DEBUG(Core_Timing, "Time very big, do rounding");
-        return Hardware::BASE_CLOCK_RATE * (ms.count() / 1000);
+        return BASE_CLOCK_RATE * (ms.count() / 1000);
     }
-    return (Hardware::BASE_CLOCK_RATE * ms.count()) / 1000;
+    return (BASE_CLOCK_RATE * ms.count()) / 1000;
 }
 
 s64 usToCycles(std::chrono::microseconds us) {
@@ -32,9 +32,9 @@ s64 usToCycles(std::chrono::microseconds us) {
     }
     if (static_cast<u64>(us.count()) > MAX_VALUE_TO_MULTIPLY) {
         LOG_DEBUG(Core_Timing, "Time very big, do rounding");
-        return Hardware::BASE_CLOCK_RATE * (us.count() / 1000000);
+        return BASE_CLOCK_RATE * (us.count() / 1000000);
     }
-    return (Hardware::BASE_CLOCK_RATE * us.count()) / 1000000;
+    return (BASE_CLOCK_RATE * us.count()) / 1000000;
 }
 
 s64 nsToCycles(std::chrono::nanoseconds ns) {
@@ -44,29 +44,14 @@ s64 nsToCycles(std::chrono::nanoseconds ns) {
     }
     if (static_cast<u64>(ns.count()) > MAX_VALUE_TO_MULTIPLY) {
         LOG_DEBUG(Core_Timing, "Time very big, do rounding");
-        return Hardware::BASE_CLOCK_RATE * (ns.count() / 1000000000);
+        return BASE_CLOCK_RATE * (ns.count() / 1000000000);
     }
-    return (Hardware::BASE_CLOCK_RATE * ns.count()) / 1000000000;
-}
-
-u64 msToClockCycles(std::chrono::milliseconds ns) {
-    const u128 temp = Common::Multiply64Into128(ns.count(), Hardware::CNTFREQ);
-    return Common::Divide128On32(temp, 1000).first;
-}
-
-u64 usToClockCycles(std::chrono::microseconds ns) {
-    const u128 temp = Common::Multiply64Into128(ns.count(), Hardware::CNTFREQ);
-    return Common::Divide128On32(temp, 1000000).first;
-}
-
-u64 nsToClockCycles(std::chrono::nanoseconds ns) {
-    const u128 temp = Common::Multiply64Into128(ns.count(), Hardware::CNTFREQ);
-    return Common::Divide128On32(temp, 1000000000).first;
+    return (BASE_CLOCK_RATE * ns.count()) / 1000000000;
 }
 
 u64 CpuCyclesToClockCycles(u64 ticks) {
-    const u128 temporal = Common::Multiply64Into128(ticks, Hardware::CNTFREQ);
-    return Common::Divide128On32(temporal, static_cast<u32>(Hardware::BASE_CLOCK_RATE)).first;
+    const u128 temporal = Common::Multiply64Into128(ticks, CNTFREQ);
+    return Common::Divide128On32(temporal, static_cast<u32>(BASE_CLOCK_RATE)).first;
 }
 
 } // namespace Core::Timing

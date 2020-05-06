@@ -21,7 +21,6 @@ struct ViewParams {
     std::size_t Hash() const;
 
     bool operator==(const ViewParams& rhs) const;
-    bool operator!=(const ViewParams& rhs) const;
 
     bool IsLayered() const {
         switch (target) {

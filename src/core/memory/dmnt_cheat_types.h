@@ -26,7 +26,7 @@
 
 #include "common/common_types.h"
 
-namespace Core::Memory {
+namespace Memory {
 
 struct MemoryRegionExtents {
     u64 base{};
@@ -55,4 +55,4 @@ struct CheatEntry {
     CheatDefinition definition{};
 };
 
-} // namespace Core::Memory
+} // namespace Memory

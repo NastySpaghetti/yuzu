@@ -80,7 +80,7 @@ private:
             LOG_ERROR(Audio, "Failed to decode opus data");
             IPC::ResponseBuilder rb{ctx, 2};
             // TODO(ogniK): Use correct error code
-            rb.Push(RESULT_UNKNOWN);
+            rb.Push(ResultCode(-1));
             return;
         }
 
@@ -170,10 +170,8 @@ public:
             {3, nullptr, "SetContextForMultiStream"},
             {4, &IHardwareOpusDecoderManager::DecodeInterleavedWithPerfOld, "DecodeInterleavedWithPerfOld"},
             {5, nullptr, "DecodeInterleavedForMultiStreamWithPerfOld"},
-            {6, &IHardwareOpusDecoderManager::DecodeInterleaved, "DecodeInterleavedWithPerfAndResetOld"},
-            {7, nullptr, "DecodeInterleavedForMultiStreamWithPerfAndResetOld"},
-            {8, &IHardwareOpusDecoderManager::DecodeInterleaved, "DecodeInterleaved"},
-            {9, nullptr, "DecodeInterleavedForMultiStream"},
+            {6, &IHardwareOpusDecoderManager::DecodeInterleaved, "DecodeInterleaved"},
+            {7, nullptr, "DecodeInterleavedForMultiStream"},
         };
         // clang-format on
 
@@ -280,7 +278,7 @@ void HwOpus::OpenOpusDecoder(Kernel::HLERequestContext& ctx) {
         LOG_ERROR(Audio, "Failed to create Opus decoder (error={}).", error);
         IPC::ResponseBuilder rb{ctx, 2};
         // TODO(ogniK): Use correct error code
-        rb.Push(RESULT_UNKNOWN);
+        rb.Push(ResultCode(-1));
         return;
     }
 

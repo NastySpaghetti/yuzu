@@ -65,10 +65,10 @@ public:
  */
 class GameListItemPath : public GameListItem {
 public:
-    static const int TitleRole = SortRole + 1;
-    static const int FullPathRole = SortRole + 2;
-    static const int ProgramIdRole = SortRole + 3;
-    static const int FileTypeRole = SortRole + 4;
+    static const int TitleRole = SortRole;
+    static const int FullPathRole = SortRole + 1;
+    static const int ProgramIdRole = SortRole + 2;
+    static const int FileTypeRole = SortRole + 3;
 
     GameListItemPath() = default;
     GameListItemPath(const QString& game_path, const std::vector<u8>& picture_data,
@@ -95,7 +95,7 @@ public:
     }
 
     QVariant data(int role) const override {
-        if (role == Qt::DisplayRole || role == SortRole) {
+        if (role == Qt::DisplayRole) {
             std::string filename;
             Common::SplitPath(data(FullPathRole).toString().toStdString(), nullptr, &filename,
                               nullptr);
@@ -108,17 +108,11 @@ public:
             }};
 
             const auto& row1 = row_data.at(UISettings::values.row_1_text_id);
-            const int row2_id = UISettings::values.row_2_text_id;
+            const auto& row2 = row_data.at(UISettings::values.row_2_text_id);
 
-            if (role == SortRole)
-                return row1.toLower();
-
-            if (row2_id == 4) // None
-                return row1;
-
-            const auto& row2 = row_data.at(row2_id);
-
-            if (row1 == row2)
+            if (row1.isEmpty() || row1 == row2)
+                return row2;
+            if (row2.isEmpty())
                 return row1;
 
             return QString(row1 + QStringLiteral("\n    ") + row2);
@@ -253,7 +247,7 @@ public:
                 Qt::DecorationRole);
             setData(QObject::tr("System Titles"), Qt::DisplayRole);
             break;
-        case GameListItemType::CustomDir: {
+        case GameListItemType::CustomDir:
             const QString icon_name = QFileInfo::exists(game_dir->path)
                                           ? QStringLiteral("folder")
                                           : QStringLiteral("bad_folder");
@@ -262,21 +256,11 @@ public:
                     Qt::DecorationRole);
             setData(game_dir->path, Qt::DisplayRole);
             break;
-        }
-        default:
-            break;
-        }
-    }
+        };
+    };
 
     int type() const override {
         return static_cast<int>(dir_type);
-    }
-
-    /**
-     * Override to prevent automatic sorting between folders and the addDir button.
-     */
-    bool operator<(const QStandardItem& other) const override {
-        return false;
     }
 
 private:
@@ -298,10 +282,6 @@ public:
 
     int type() const override {
         return static_cast<int>(GameListItemType::AddDir);
-    }
-
-    bool operator<(const QStandardItem& other) const override {
-        return false;
     }
 };
 

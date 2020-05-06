@@ -10,8 +10,7 @@
 #include "common/math_util.h"
 #include "video_core/renderer_base.h"
 #include "video_core/renderer_opengl/gl_resource_manager.h"
-#include "video_core/renderer_opengl/gl_shader_manager.h"
-#include "video_core/renderer_opengl/gl_state_tracker.h"
+#include "video_core/renderer_opengl/gl_state.h"
 
 namespace Core {
 class System;
@@ -45,82 +44,67 @@ struct ScreenInfo {
     TextureInfo texture;
 };
 
-struct PresentationTexture {
-    u32 width = 0;
-    u32 height = 0;
-    OGLTexture texture;
-};
-
-class FrameMailbox;
-
 class RendererOpenGL final : public VideoCore::RendererBase {
 public:
-    explicit RendererOpenGL(Core::Frontend::EmuWindow& emu_window, Core::System& system,
-                            Core::Frontend::GraphicsContext& context);
+    explicit RendererOpenGL(Core::Frontend::EmuWindow& emu_window, Core::System& system);
     ~RendererOpenGL() override;
 
-    bool Init() override;
-    void ShutDown() override;
+    /// Swap buffers (render frame)
     void SwapBuffers(const Tegra::FramebufferConfig* framebuffer) override;
-    bool TryPresent(int timeout_ms) override;
+
+    /// Initialize the renderer
+    bool Init() override;
+
+    /// Shutdown the renderer
+    void ShutDown() override;
 
 private:
-    /// Initializes the OpenGL state and creates persistent objects.
     void InitOpenGLObjects();
-
     void AddTelemetryFields();
-
     void CreateRasterizer();
 
     void ConfigureFramebufferTexture(TextureInfo& texture,
                                      const Tegra::FramebufferConfig& framebuffer);
-
-    /// Draws the emulated screens to the emulator window.
     void DrawScreen(const Layout::FramebufferLayout& layout);
+    void DrawScreenTriangles(const ScreenInfo& screen_info, float x, float y, float w, float h);
+    void UpdateFramerate();
 
-    void RenderScreenshot();
+    void CaptureScreenshot();
 
-    /// Loads framebuffer from emulated memory into the active OpenGL texture.
+    // Loads framebuffer from emulated memory into the display information structure
     void LoadFBToScreenInfo(const Tegra::FramebufferConfig& framebuffer);
-
-    /// Fills active OpenGL texture with the given RGB color.Since the color is solid, the texture
-    /// can be 1x1 but will stretch across whatever it's rendered on.
+    // Fills active OpenGL texture with the given RGBA color.
     void LoadColorToActiveGLTexture(u8 color_r, u8 color_g, u8 color_b, u8 color_a,
                                     const TextureInfo& texture);
 
-    void PrepareRendertarget(const Tegra::FramebufferConfig* framebuffer);
-
-    bool Present(int timeout_ms);
-
     Core::Frontend::EmuWindow& emu_window;
     Core::System& system;
-    Core::Frontend::GraphicsContext& context;
 
-    StateTracker state_tracker{system};
+    OpenGLState state;
 
     // OpenGL object IDs
+    OGLVertexArray vertex_array;
     OGLBuffer vertex_buffer;
-    OGLProgram vertex_program;
-    OGLProgram fragment_program;
+    OGLProgram shader;
     OGLFramebuffer screenshot_framebuffer;
 
     /// Display information for Switch screen
     ScreenInfo screen_info;
 
-    /// Global dummy shader pipeline
-    GLShader::ProgramManager program_manager;
-
     /// OpenGL framebuffer data
     std::vector<u8> gl_framebuffer_data;
+
+    // Shader uniform location indices
+    GLuint uniform_modelview_matrix;
+    GLuint uniform_color_texture;
+
+    // Shader attribute input indices
+    GLuint attrib_position;
+    GLuint attrib_tex_coord;
 
     /// Used for transforming the framebuffer orientation
     Tegra::FramebufferConfig::TransformFlags framebuffer_transform_flags;
     Common::Rectangle<int> framebuffer_crop_rect;
-
-    /// Frame presentation mailbox
-    std::unique_ptr<FrameMailbox> frame_mailbox;
-
-    bool has_debug_tool = false;
 };
 
 } // namespace OpenGL

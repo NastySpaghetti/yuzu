@@ -16,62 +16,26 @@ constexpr std::size_t ResourceTypeToIndex(ResourceType type) {
 ResourceLimit::ResourceLimit(KernelCore& kernel) : Object{kernel} {}
 ResourceLimit::~ResourceLimit() = default;
 
-bool ResourceLimit::Reserve(ResourceType resource, s64 amount) {
-    return Reserve(resource, amount, 10000000000);
-}
-
-bool ResourceLimit::Reserve(ResourceType resource, s64 amount, u64 timeout) {
-    const std::size_t index{ResourceTypeToIndex(resource)};
-
-    s64 new_value = current[index] + amount;
-    while (new_value > limit[index] && available[index] + amount <= limit[index]) {
-        // TODO(bunnei): This is wrong for multicore, we should wait the calling thread for timeout
-        new_value = current[index] + amount;
-
-        if (timeout >= 0) {
-            break;
-        }
-    }
-
-    if (new_value <= limit[index]) {
-        current[index] = new_value;
-        return true;
-    }
-    return false;
-}
-
-void ResourceLimit::Release(ResourceType resource, u64 amount) {
-    Release(resource, amount, amount);
-}
-
-void ResourceLimit::Release(ResourceType resource, u64 used_amount, u64 available_amount) {
-    const std::size_t index{ResourceTypeToIndex(resource)};
-
-    current[index] -= used_amount;
-    available[index] -= available_amount;
-}
-
-std::shared_ptr<ResourceLimit> ResourceLimit::Create(KernelCore& kernel) {
-    return std::make_shared<ResourceLimit>(kernel);
+SharedPtr<ResourceLimit> ResourceLimit::Create(KernelCore& kernel) {
+    return new ResourceLimit(kernel);
 }
 
 s64 ResourceLimit::GetCurrentResourceValue(ResourceType resource) const {
-    return limit.at(ResourceTypeToIndex(resource)) - current.at(ResourceTypeToIndex(resource));
+    return values.at(ResourceTypeToIndex(resource));
 }
 
 s64 ResourceLimit::GetMaxResourceValue(ResourceType resource) const {
-    return limit.at(ResourceTypeToIndex(resource));
+    return limits.at(ResourceTypeToIndex(resource));
 }
 
 ResultCode ResourceLimit::SetLimitValue(ResourceType resource, s64 value) {
-    const std::size_t index{ResourceTypeToIndex(resource)};
-    if (current[index] <= value) {
-        limit[index] = value;
-        return RESULT_SUCCESS;
-    } else {
-        LOG_ERROR(Kernel, "Limit value is too large! resource={}, value={}, index={}",
-                  static_cast<u32>(resource), value, index);
+    const auto index = ResourceTypeToIndex(resource);
+
+    if (value < values[index]) {
         return ERR_INVALID_STATE;
     }
+
+    values[index] = value;
+    return RESULT_SUCCESS;
 }
 } // namespace Kernel

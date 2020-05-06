@@ -35,9 +35,6 @@ public:
     /// Write the value to the register identified by method.
     void CallMethod(const GPU::MethodCall& method_call);
 
-    /// Write multiple values to the register identified by method.
-    void CallMultiMethod(u32 method, const u32* base_start, u32 amount, u32 methods_pending);
-
     struct Regs {
         static constexpr std::size_t NUM_REGS = 0x1D6;
 
@@ -97,7 +94,7 @@ public:
 
         union {
             struct {
-                INSERT_UNION_PADDING_WORDS(0xC0);
+                INSERT_PADDING_WORDS(0xC0);
 
                 struct {
                     union {
@@ -115,7 +112,7 @@ public:
                     };
                 } exec;
 
-                INSERT_UNION_PADDING_WORDS(0x3F);
+                INSERT_PADDING_WORDS(0x3F);
 
                 struct {
                     u32 address_high;
@@ -142,7 +139,7 @@ public:
                 u32 x_count;
                 u32 y_count;
 
-                INSERT_UNION_PADDING_WORDS(0xB8);
+                INSERT_PADDING_WORDS(0xB8);
 
                 u32 const0;
                 u32 const1;
@@ -165,11 +162,11 @@ public:
 
                 Parameters dst_params;
 
-                INSERT_UNION_PADDING_WORDS(1);
+                INSERT_PADDING_WORDS(1);
 
                 Parameters src_params;
 
-                INSERT_UNION_PADDING_WORDS(0x13);
+                INSERT_PADDING_WORDS(0x13);
             };
             std::array<u32, NUM_REGS> reg_array;
         };

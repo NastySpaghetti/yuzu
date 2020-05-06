@@ -3,13 +3,9 @@
 // Refer to the license.txt file included.
 
 #include "common/assert.h"
-#include "common/microprofile.h"
 #include "core/core.h"
 #include "core/core_timing.h"
-#include "core/core_timing_util.h"
-#include "core/frontend/emu_window.h"
 #include "core/memory.h"
-#include "core/settings.h"
 #include "video_core/engines/fermi_2d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/kepler_memory.h"
@@ -18,17 +14,14 @@
 #include "video_core/gpu.h"
 #include "video_core/memory_manager.h"
 #include "video_core/renderer_base.h"
-#include "video_core/video_core.h"
 
 namespace Tegra {
 
-MICROPROFILE_DEFINE(GPU_wait, "GPU", "Wait for the GPU", MP_RGB(128, 128, 192));
-
-GPU::GPU(Core::System& system, std::unique_ptr<VideoCore::RendererBase>&& renderer_, bool is_async)
-    : system{system}, renderer{std::move(renderer_)}, is_async{is_async} {
-    auto& rasterizer{renderer->Rasterizer()};
+GPU::GPU(Core::System& system, VideoCore::RendererBase& renderer, bool is_async)
+    : system{system}, renderer{renderer}, is_async{is_async} {
+    auto& rasterizer{renderer.Rasterizer()};
     memory_manager = std::make_unique<Tegra::MemoryManager>(system, rasterizer);
-    dma_pusher = std::make_unique<Tegra::DmaPusher>(system, *this);
+    dma_pusher = std::make_unique<Tegra::DmaPusher>(*this);
     maxwell_3d = std::make_unique<Engines::Maxwell3D>(system, rasterizer, *memory_manager);
     fermi_2d = std::make_unique<Engines::Fermi2D>(rasterizer);
     kepler_compute = std::make_unique<Engines::KeplerCompute>(system, rasterizer, *memory_manager);
@@ -70,20 +63,9 @@ const DmaPusher& GPU::DmaPusher() const {
     return *dma_pusher;
 }
 
-void GPU::WaitFence(u32 syncpoint_id, u32 value) {
-    // Synced GPU, is always in sync
-    if (!is_async) {
-        return;
-    }
-    MICROPROFILE_SCOPE(GPU_wait);
-    std::unique_lock lock{sync_mutex};
-    sync_cv.wait(lock, [=]() { return syncpoints[syncpoint_id].load() >= value; });
-}
-
 void GPU::IncrementSyncPoint(const u32 syncpoint_id) {
     syncpoints[syncpoint_id]++;
     std::lock_guard lock{sync_mutex};
-    sync_cv.notify_all();
     if (!syncpt_interrupts[syncpoint_id].empty()) {
         u32 value = syncpoints[syncpoint_id].load();
         auto it = syncpt_interrupts[syncpoint_id].begin();
@@ -126,55 +108,75 @@ bool GPU::CancelSyncptInterrupt(const u32 syncpoint_id, const u32 value) {
     return true;
 }
 
-u64 GPU::RequestFlush(VAddr addr, std::size_t size) {
-    std::unique_lock lck{flush_request_mutex};
-    const u64 fence = ++last_flush_fence;
-    flush_requests.emplace_back(fence, addr, size);
-    return fence;
-}
-
-void GPU::TickWork() {
-    std::unique_lock lck{flush_request_mutex};
-    while (!flush_requests.empty()) {
-        auto& request = flush_requests.front();
-        const u64 fence = request.fence;
-        const VAddr addr = request.addr;
-        const std::size_t size = request.size;
-        flush_requests.pop_front();
-        flush_request_mutex.unlock();
-        renderer->Rasterizer().FlushRegion(addr, size);
-        current_flush_fence.store(fence);
-        flush_request_mutex.lock();
-    }
-}
-
-u64 GPU::GetTicks() const {
-    // This values were reversed engineered by fincs from NVN
-    // The gpu clock is reported in units of 385/625 nanoseconds
-    constexpr u64 gpu_ticks_num = 384;
-    constexpr u64 gpu_ticks_den = 625;
-
-    const u64 cpu_ticks = system.CoreTiming().GetTicks();
-    u64 nanoseconds = Core::Timing::CyclesToNs(cpu_ticks).count();
-    if (Settings::values.use_fast_gpu_time) {
-        nanoseconds /= 256;
-    }
-    const u64 nanoseconds_num = nanoseconds / gpu_ticks_den;
-    const u64 nanoseconds_rem = nanoseconds % gpu_ticks_den;
-    return nanoseconds_num * gpu_ticks_num + (nanoseconds_rem * gpu_ticks_num) / gpu_ticks_den;
-}
-
 void GPU::FlushCommands() {
-    renderer->Rasterizer().FlushCommands();
+    renderer.Rasterizer().FlushCommands();
 }
 
-void GPU::SyncGuestHost() {
-    renderer->Rasterizer().SyncGuestHost();
+u32 RenderTargetBytesPerPixel(RenderTargetFormat format) {
+    ASSERT(format != RenderTargetFormat::NONE);
+
+    switch (format) {
+    case RenderTargetFormat::RGBA32_FLOAT:
+    case RenderTargetFormat::RGBA32_UINT:
+        return 16;
+    case RenderTargetFormat::RGBA16_UINT:
+    case RenderTargetFormat::RGBA16_UNORM:
+    case RenderTargetFormat::RGBA16_FLOAT:
+    case RenderTargetFormat::RGBX16_FLOAT:
+    case RenderTargetFormat::RG32_FLOAT:
+    case RenderTargetFormat::RG32_UINT:
+        return 8;
+    case RenderTargetFormat::RGBA8_UNORM:
+    case RenderTargetFormat::RGBA8_SNORM:
+    case RenderTargetFormat::RGBA8_SRGB:
+    case RenderTargetFormat::RGBA8_UINT:
+    case RenderTargetFormat::RGB10_A2_UNORM:
+    case RenderTargetFormat::BGRA8_UNORM:
+    case RenderTargetFormat::BGRA8_SRGB:
+    case RenderTargetFormat::RG16_UNORM:
+    case RenderTargetFormat::RG16_SNORM:
+    case RenderTargetFormat::RG16_UINT:
+    case RenderTargetFormat::RG16_SINT:
+    case RenderTargetFormat::RG16_FLOAT:
+    case RenderTargetFormat::R32_FLOAT:
+    case RenderTargetFormat::R11G11B10_FLOAT:
+    case RenderTargetFormat::R32_UINT:
+        return 4;
+    case RenderTargetFormat::R16_UNORM:
+    case RenderTargetFormat::R16_SNORM:
+    case RenderTargetFormat::R16_UINT:
+    case RenderTargetFormat::R16_SINT:
+    case RenderTargetFormat::R16_FLOAT:
+    case RenderTargetFormat::RG8_UNORM:
+    case RenderTargetFormat::RG8_SNORM:
+        return 2;
+    case RenderTargetFormat::R8_UNORM:
+    case RenderTargetFormat::R8_UINT:
+        return 1;
+    default:
+        UNIMPLEMENTED_MSG("Unimplemented render target format {}", static_cast<u32>(format));
+        return 1;
+    }
 }
 
-void GPU::OnCommandListEnd() {
-    renderer->Rasterizer().ReleaseFences();
+u32 DepthFormatBytesPerPixel(DepthFormat format) {
+    switch (format) {
+    case DepthFormat::Z32_S8_X24_FLOAT:
+        return 8;
+    case DepthFormat::Z32_FLOAT:
+    case DepthFormat::S8_Z24_UNORM:
+    case DepthFormat::Z24_X8_UNORM:
+    case DepthFormat::Z24_S8_UNORM:
+    case DepthFormat::Z24_C8_UNORM:
+        return 4;
+    case DepthFormat::Z16_UNORM:
+        return 2;
+    default:
+        UNIMPLEMENTED_MSG("Unimplemented Depth format {}", static_cast<u32>(format));
+        return 1;
+    }
 }
+
 // Note that, traditionally, methods are treated as 4-byte addressable locations, and hence
 // their numbers are written down multiplied by 4 in Docs. Here we are not multiply by 4.
 // So the values you see in docs might be multiplied by 4.
@@ -213,32 +215,16 @@ void GPU::CallMethod(const MethodCall& method_call) {
 
     ASSERT(method_call.subchannel < bound_engines.size());
 
-    if (ExecuteMethodOnEngine(method_call.method)) {
+    if (ExecuteMethodOnEngine(method_call)) {
         CallEngineMethod(method_call);
     } else {
         CallPullerMethod(method_call);
     }
 }
 
-void GPU::CallMultiMethod(u32 method, u32 subchannel, const u32* base_start, u32 amount,
-                          u32 methods_pending) {
-    LOG_TRACE(HW_GPU, "Processing method {:08X} on subchannel {}", method, subchannel);
-
-    ASSERT(subchannel < bound_engines.size());
-
-    if (ExecuteMethodOnEngine(method)) {
-        CallEngineMultiMethod(method, subchannel, base_start, amount, methods_pending);
-    } else {
-        for (std::size_t i = 0; i < amount; i++) {
-            CallPullerMethod(
-                {method, base_start[i], subchannel, methods_pending - static_cast<u32>(i)});
-        }
-    }
-}
-
-bool GPU::ExecuteMethodOnEngine(u32 method) {
-    const auto buffer_method = static_cast<BufferMethods>(method);
-    return buffer_method >= BufferMethods::NonPullerMethods;
+bool GPU::ExecuteMethodOnEngine(const MethodCall& method_call) {
+    const auto method = static_cast<BufferMethods>(method_call.method);
+    return method >= BufferMethods::NonPullerMethods;
 }
 
 void GPU::CallPullerMethod(const MethodCall& method_call) {
@@ -318,31 +304,6 @@ void GPU::CallEngineMethod(const MethodCall& method_call) {
     }
 }
 
-void GPU::CallEngineMultiMethod(u32 method, u32 subchannel, const u32* base_start, u32 amount,
-                                u32 methods_pending) {
-    const EngineID engine = bound_engines[subchannel];
-
-    switch (engine) {
-    case EngineID::FERMI_TWOD_A:
-        fermi_2d->CallMultiMethod(method, base_start, amount, methods_pending);
-        break;
-    case EngineID::MAXWELL_B:
-        maxwell_3d->CallMultiMethod(method, base_start, amount, methods_pending);
-        break;
-    case EngineID::KEPLER_COMPUTE_B:
-        kepler_compute->CallMultiMethod(method, base_start, amount, methods_pending);
-        break;
-    case EngineID::MAXWELL_DMA_COPY_A:
-        maxwell_dma->CallMultiMethod(method, base_start, amount, methods_pending);
-        break;
-    case EngineID::KEPLER_INLINE_TO_MEMORY_B:
-        kepler_memory->CallMultiMethod(method, base_start, amount, methods_pending);
-        break;
-    default:
-        UNIMPLEMENTED_MSG("Unimplemented engine");
-    }
-}
-
 void GPU::ProcessBindMethod(const MethodCall& method_call) {
     // Bind the current subchannel to the desired engine id.
     LOG_DEBUG(HW_GPU, "Binding subchannel {} to engine {}", method_call.subchannel,
@@ -365,7 +326,7 @@ void GPU::ProcessSemaphoreTriggerMethod() {
         block.sequence = regs.semaphore_sequence;
         // TODO(Kmather73): Generate a real GPU timestamp and write it here instead of
         // CoreTiming
-        block.timestamp = GetTicks();
+        block.timestamp = Core::System::GetInstance().CoreTiming().GetTicks();
         memory_manager->WriteBlock(regs.semaphore_address.SemaphoreAddress(), &block,
                                    sizeof(block));
     } else {

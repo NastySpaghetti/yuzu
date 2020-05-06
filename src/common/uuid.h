@@ -40,11 +40,6 @@ struct UUID {
         uuid = INVALID_UUID;
     }
 
-    // TODO(ogniK): Properly generate a Nintendo ID
-    constexpr u64 GetNintendoID() const {
-        return uuid[0];
-    }
-
     std::string Format() const;
     std::string FormatSwitch() const;
 };

@@ -24,12 +24,12 @@
 namespace Service::AM::Applets {
 
 AppletDataBroker::AppletDataBroker(Kernel::KernelCore& kernel) {
-    state_changed_event =
-        Kernel::WritableEvent::CreateEventPair(kernel, "ILibraryAppletAccessor:StateChangedEvent");
-    pop_out_data_event =
-        Kernel::WritableEvent::CreateEventPair(kernel, "ILibraryAppletAccessor:PopDataOutEvent");
+    state_changed_event = Kernel::WritableEvent::CreateEventPair(
+        kernel, Kernel::ResetType::Manual, "ILibraryAppletAccessor:StateChangedEvent");
+    pop_out_data_event = Kernel::WritableEvent::CreateEventPair(
+        kernel, Kernel::ResetType::Manual, "ILibraryAppletAccessor:PopDataOutEvent");
     pop_interactive_out_data_event = Kernel::WritableEvent::CreateEventPair(
-        kernel, "ILibraryAppletAccessor:PopInteractiveDataOutEvent");
+        kernel, Kernel::ResetType::Manual, "ILibraryAppletAccessor:PopInteractiveDataOutEvent");
 }
 
 AppletDataBroker::~AppletDataBroker() = default;
@@ -50,17 +50,16 @@ AppletDataBroker::RawChannelData AppletDataBroker::PeekDataToAppletForDebug() co
     return {std::move(out_normal), std::move(out_interactive)};
 }
 
-std::shared_ptr<IStorage> AppletDataBroker::PopNormalDataToGame() {
+std::unique_ptr<IStorage> AppletDataBroker::PopNormalDataToGame() {
     if (out_channel.empty())
         return nullptr;
 
     auto out = std::move(out_channel.front());
     out_channel.pop_front();
-    pop_out_data_event.writable->Clear();
     return out;
 }
 
-std::shared_ptr<IStorage> AppletDataBroker::PopNormalDataToApplet() {
+std::unique_ptr<IStorage> AppletDataBroker::PopNormalDataToApplet() {
     if (in_channel.empty())
         return nullptr;
 
@@ -69,17 +68,16 @@ std::shared_ptr<IStorage> AppletDataBroker::PopNormalDataToApplet() {
     return out;
 }
 
-std::shared_ptr<IStorage> AppletDataBroker::PopInteractiveDataToGame() {
+std::unique_ptr<IStorage> AppletDataBroker::PopInteractiveDataToGame() {
     if (out_interactive_channel.empty())
         return nullptr;
 
     auto out = std::move(out_interactive_channel.front());
     out_interactive_channel.pop_front();
-    pop_interactive_out_data_event.writable->Clear();
     return out;
 }
 
-std::shared_ptr<IStorage> AppletDataBroker::PopInteractiveDataToApplet() {
+std::unique_ptr<IStorage> AppletDataBroker::PopInteractiveDataToApplet() {
     if (in_interactive_channel.empty())
         return nullptr;
 
@@ -88,21 +86,21 @@ std::shared_ptr<IStorage> AppletDataBroker::PopInteractiveDataToApplet() {
     return out;
 }
 
-void AppletDataBroker::PushNormalDataFromGame(std::shared_ptr<IStorage>&& storage) {
-    in_channel.emplace_back(std::move(storage));
+void AppletDataBroker::PushNormalDataFromGame(IStorage storage) {
+    in_channel.push_back(std::make_unique<IStorage>(storage));
 }
 
-void AppletDataBroker::PushNormalDataFromApplet(std::shared_ptr<IStorage>&& storage) {
-    out_channel.emplace_back(std::move(storage));
+void AppletDataBroker::PushNormalDataFromApplet(IStorage storage) {
+    out_channel.push_back(std::make_unique<IStorage>(storage));
     pop_out_data_event.writable->Signal();
 }
 
-void AppletDataBroker::PushInteractiveDataFromGame(std::shared_ptr<IStorage>&& storage) {
-    in_interactive_channel.emplace_back(std::move(storage));
+void AppletDataBroker::PushInteractiveDataFromGame(IStorage storage) {
+    in_interactive_channel.push_back(std::make_unique<IStorage>(storage));
 }
 
-void AppletDataBroker::PushInteractiveDataFromApplet(std::shared_ptr<IStorage>&& storage) {
-    out_interactive_channel.emplace_back(std::move(storage));
+void AppletDataBroker::PushInteractiveDataFromApplet(IStorage storage) {
+    out_interactive_channel.push_back(std::make_unique<IStorage>(storage));
     pop_interactive_out_data_event.writable->Signal();
 }
 
@@ -110,15 +108,15 @@ void AppletDataBroker::SignalStateChanged() const {
     state_changed_event.writable->Signal();
 }
 
-std::shared_ptr<Kernel::ReadableEvent> AppletDataBroker::GetNormalDataEvent() const {
+Kernel::SharedPtr<Kernel::ReadableEvent> AppletDataBroker::GetNormalDataEvent() const {
     return pop_out_data_event.readable;
 }
 
-std::shared_ptr<Kernel::ReadableEvent> AppletDataBroker::GetInteractiveDataEvent() const {
+Kernel::SharedPtr<Kernel::ReadableEvent> AppletDataBroker::GetInteractiveDataEvent() const {
     return pop_interactive_out_data_event.readable;
 }
 
-std::shared_ptr<Kernel::ReadableEvent> AppletDataBroker::GetStateChangedEvent() const {
+Kernel::SharedPtr<Kernel::ReadableEvent> AppletDataBroker::GetStateChangedEvent() const {
     return state_changed_event.readable;
 }
 

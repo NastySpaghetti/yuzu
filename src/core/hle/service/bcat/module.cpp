@@ -35,7 +35,8 @@ using BCATDigest = std::array<u8, 0x10>;
 
 namespace {
 
-u64 GetCurrentBuildID(const Core::System::CurrentBuildProcessID& id) {
+u64 GetCurrentBuildID() {
+    const auto& id = Core::System::GetInstance().GetCurrentProcessBuildID();
     u64 out{};
     std::memcpy(&out, id.data(), sizeof(u64));
     return out;
@@ -46,7 +47,7 @@ u64 GetCurrentBuildID(const Core::System::CurrentBuildProcessID& id) {
 BCATDigest DigestFile(const FileSys::VirtualFile& file) {
     BCATDigest out{};
     const auto bytes = file->ReadAllBytes();
-    mbedtls_md5_ret(bytes.data(), bytes.size(), out.data());
+    mbedtls_md5(bytes.data(), bytes.size(), out.data());
     return out;
 }
 
@@ -87,7 +88,7 @@ struct DeliveryCacheDirectoryEntry {
 
 class IDeliveryCacheProgressService final : public ServiceFramework<IDeliveryCacheProgressService> {
 public:
-    IDeliveryCacheProgressService(std::shared_ptr<Kernel::ReadableEvent> event,
+    IDeliveryCacheProgressService(Kernel::SharedPtr<Kernel::ReadableEvent> event,
                                   const DeliveryCacheProgressImpl& impl)
         : ServiceFramework{"IDeliveryCacheProgressService"}, event(std::move(event)), impl(impl) {
         // clang-format off
@@ -118,18 +119,13 @@ private:
         rb.Push(RESULT_SUCCESS);
     }
 
-    std::shared_ptr<Kernel::ReadableEvent> event;
+    Kernel::SharedPtr<Kernel::ReadableEvent> event;
     const DeliveryCacheProgressImpl& impl;
 };
 
 class IBcatService final : public ServiceFramework<IBcatService> {
 public:
-    explicit IBcatService(Core::System& system_, Backend& backend_)
-        : ServiceFramework("IBcatService"), system{system_}, backend{backend_},
-          progress{{
-              ProgressServiceBackend{system_.Kernel(), "Normal"},
-              ProgressServiceBackend{system_.Kernel(), "Directory"},
-          }} {
+    IBcatService(Backend& backend) : ServiceFramework("IBcatService"), backend(backend) {
         // clang-format off
         static const FunctionInfo functions[] = {
             {10100, &IBcatService::RequestSyncDeliveryCache, "RequestSyncDeliveryCache"},
@@ -137,21 +133,14 @@ public:
             {10200, nullptr, "CancelSyncDeliveryCacheRequest"},
             {20100, nullptr, "RequestSyncDeliveryCacheWithApplicationId"},
             {20101, nullptr, "RequestSyncDeliveryCacheWithApplicationIdAndDirectoryName"},
-            {20300, nullptr, "GetDeliveryCacheStorageUpdateNotifier"},
-            {20301, nullptr, "RequestSuspendDeliveryTask"},
-            {20400, nullptr, "RegisterSystemApplicationDeliveryTask"},
-            {20401, nullptr, "UnregisterSystemApplicationDeliveryTask"},
-            {20410, nullptr, "SetSystemApplicationDeliveryTaskTimer"},
             {30100, &IBcatService::SetPassphrase, "SetPassphrase"},
             {30200, nullptr, "RegisterBackgroundDeliveryTask"},
             {30201, nullptr, "UnregisterBackgroundDeliveryTask"},
             {30202, nullptr, "BlockDeliveryTask"},
             {30203, nullptr, "UnblockDeliveryTask"},
-            {30300, nullptr, "RegisterSystemApplicationDeliveryTasks"},
             {90100, nullptr, "EnumerateBackgroundDeliveryTask"},
             {90200, nullptr, "GetDeliveryList"},
             {90201, &IBcatService::ClearDeliveryCacheStorage, "ClearDeliveryCacheStorage"},
-            {90202, nullptr, "ClearDeliveryTaskSubscriptionStatus"},
             {90300, nullptr, "GetPushNotificationLog"},
         };
         // clang-format on
@@ -174,8 +163,7 @@ private:
     void RequestSyncDeliveryCache(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_BCAT, "called");
 
-        backend.Synchronize({system.CurrentProcess()->GetTitleID(),
-                             GetCurrentBuildID(system.GetCurrentProcessBuildID())},
+        backend.Synchronize({Core::CurrentProcess()->GetTitleID(), GetCurrentBuildID()},
                             progress.at(static_cast<std::size_t>(SyncType::Normal)));
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
@@ -191,8 +179,7 @@ private:
 
         LOG_DEBUG(Service_BCAT, "called, name={}", name);
 
-        backend.SynchronizeDirectory({system.CurrentProcess()->GetTitleID(),
-                                      GetCurrentBuildID(system.GetCurrentProcessBuildID())},
+        backend.SynchronizeDirectory({Core::CurrentProcess()->GetTitleID(), GetCurrentBuildID()},
                                      name,
                                      progress.at(static_cast<std::size_t>(SyncType::Directory)));
 
@@ -257,10 +244,12 @@ private:
         rb.Push(RESULT_SUCCESS);
     }
 
-    Core::System& system;
     Backend& backend;
 
-    std::array<ProgressServiceBackend, static_cast<std::size_t>(SyncType::Count)> progress;
+    std::array<ProgressServiceBackend, static_cast<std::size_t>(SyncType::Count)> progress{
+        ProgressServiceBackend{"Normal"},
+        ProgressServiceBackend{"Directory"},
+    };
 };
 
 void Module::Interface::CreateBcatService(Kernel::HLERequestContext& ctx) {
@@ -268,7 +257,7 @@ void Module::Interface::CreateBcatService(Kernel::HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface<IBcatService>(system, *backend);
+    rb.PushIpcInterface<IBcatService>(*backend);
 }
 
 class IDeliveryCacheFileService final : public ServiceFramework<IDeliveryCacheFileService> {
@@ -462,7 +451,7 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
-        rb.Push(static_cast<u32>(write_size * sizeof(DeliveryCacheDirectoryEntry)));
+        rb.Push<u32>(write_size * sizeof(DeliveryCacheDirectoryEntry));
     }
 
     void GetCount(Kernel::HLERequestContext& ctx) {
@@ -479,7 +468,7 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
-        rb.Push(static_cast<u32>(files.size()));
+        rb.Push<u32>(files.size());
     }
 
     FileSys::VirtualDir root;
@@ -536,7 +525,7 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(RESULT_SUCCESS);
-        rb.Push(static_cast<u32>(size));
+        rb.Push<u32>(size);
     }
 
     FileSys::VirtualDir root;
@@ -550,7 +539,7 @@ void Module::Interface::CreateDeliveryCacheStorageService(Kernel::HLERequestCont
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
     rb.PushIpcInterface<IDeliveryCacheStorageService>(
-        fsc.GetBCATDirectory(system.CurrentProcess()->GetTitleID()));
+        fsc.GetBCATDirectory(Core::CurrentProcess()->GetTitleID()));
 }
 
 void Module::Interface::CreateDeliveryCacheStorageServiceWithApplicationId(
@@ -565,35 +554,33 @@ void Module::Interface::CreateDeliveryCacheStorageServiceWithApplicationId(
     rb.PushIpcInterface<IDeliveryCacheStorageService>(fsc.GetBCATDirectory(title_id));
 }
 
-std::unique_ptr<Backend> CreateBackendFromSettings([[maybe_unused]] Core::System& system,
-                                                   DirectoryGetter getter) {
+std::unique_ptr<Backend> CreateBackendFromSettings(DirectoryGetter getter) {
+    const auto backend = Settings::values.bcat_backend;
+
 #ifdef YUZU_ENABLE_BOXCAT
-    if (Settings::values.bcat_backend == "boxcat") {
-        return std::make_unique<Boxcat>(system.GetAppletManager(), std::move(getter));
-    }
+    if (backend == "boxcat")
+        return std::make_unique<Boxcat>(std::move(getter));
 #endif
 
     return std::make_unique<NullBackend>(std::move(getter));
 }
 
-Module::Interface::Interface(Core::System& system_, std::shared_ptr<Module> module_,
-                             FileSystem::FileSystemController& fsc_, const char* name)
-    : ServiceFramework(name), fsc{fsc_}, module{std::move(module_)},
-      backend{CreateBackendFromSettings(system_,
-                                        [&fsc_](u64 tid) { return fsc_.GetBCATDirectory(tid); })},
-      system{system_} {}
+Module::Interface::Interface(std::shared_ptr<Module> module, FileSystem::FileSystemController& fsc,
+                             const char* name)
+    : ServiceFramework(name), module(std::move(module)), fsc(fsc),
+      backend(CreateBackendFromSettings([&fsc](u64 tid) { return fsc.GetBCATDirectory(tid); })) {}
 
 Module::Interface::~Interface() = default;
 
 void InstallInterfaces(Core::System& system) {
     auto module = std::make_shared<Module>();
-    std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:a")
+    std::make_shared<BCAT>(module, system.GetFileSystemController(), "bcat:a")
         ->InstallAsService(system.ServiceManager());
-    std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:m")
+    std::make_shared<BCAT>(module, system.GetFileSystemController(), "bcat:m")
         ->InstallAsService(system.ServiceManager());
-    std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:u")
+    std::make_shared<BCAT>(module, system.GetFileSystemController(), "bcat:u")
         ->InstallAsService(system.ServiceManager());
-    std::make_shared<BCAT>(system, module, system.GetFileSystemController(), "bcat:s")
+    std::make_shared<BCAT>(module, system.GetFileSystemController(), "bcat:s")
         ->InstallAsService(system.ServiceManager());
 }
 

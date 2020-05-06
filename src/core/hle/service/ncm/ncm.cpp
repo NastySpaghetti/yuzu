@@ -61,8 +61,7 @@ public:
             {5, nullptr, "RegisterHtmlDocumentPath"},
             {6, nullptr, "UnregisterHtmlDocumentPath"},
             {7, nullptr, "RedirectHtmlDocumentPath"},
-            {8, nullptr, "Refresh"},
-            {9, nullptr, "RefreshExcluding"},
+            {8, nullptr, ""},
         };
         // clang-format on
 
@@ -78,8 +77,6 @@ public:
             {0, nullptr, "ResolveAddOnContentPath"},
             {1, nullptr, "RegisterAddOnContentStorage"},
             {2, nullptr, "UnregisterAllAddOnContentPath"},
-            {3, nullptr, "RefreshApplicationAddOnContent"},
-            {4, nullptr, "UnregisterApplicationAddOnContent"},
         };
         // clang-format on
 
@@ -121,8 +118,6 @@ public:
             {10, nullptr, "InactivateContentStorage"},
             {11, nullptr, "ActivateContentMetaDatabase"},
             {12, nullptr, "InactivateContentMetaDatabase"},
-            {13, nullptr, "InvalidateRightsIdCache"},
-            {14, nullptr, "GetMemoryReport"},
         };
         // clang-format on
 

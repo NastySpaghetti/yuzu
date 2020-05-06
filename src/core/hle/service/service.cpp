@@ -116,7 +116,7 @@ void ServiceFrameworkBase::InstallAsNamedPort() {
     port_installed = true;
 }
 
-std::shared_ptr<Kernel::ClientPort> ServiceFrameworkBase::CreatePort() {
+Kernel::SharedPtr<Kernel::ClientPort> ServiceFrameworkBase::CreatePort() {
     ASSERT(!port_installed);
 
     auto& kernel = Core::System::GetInstance().Kernel();
@@ -186,7 +186,7 @@ ResultCode ServiceFrameworkBase::HandleSyncRequest(Kernel::HLERequestContext& co
         UNIMPLEMENTED_MSG("command_type={}", static_cast<int>(context.GetCommandType()));
     }
 
-    context.WriteToOutgoingCommandBuffer(context.GetThread());
+    context.WriteToOutgoingCommandBuffer(*Kernel::GetCurrentThread());
 
     return RESULT_SUCCESS;
 }
@@ -201,7 +201,7 @@ void Init(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system) {
     auto nv_flinger = std::make_shared<NVFlinger::NVFlinger>(system);
     system.GetFileSystemController().CreateFactories(*system.GetFilesystem(), false);
 
-    SM::ServiceManager::InstallInterfaces(sm, system.Kernel());
+    SM::ServiceManager::InstallInterfaces(sm);
 
     Account::InstallInterfaces(system);
     AM::InstallInterfaces(*sm, nv_flinger, system);
@@ -226,7 +226,7 @@ void Init(std::shared_ptr<SM::ServiceManager>& sm, Core::System& system) {
     LBL::InstallInterfaces(*sm);
     LDN::InstallInterfaces(*sm);
     LDR::InstallInterfaces(*sm, system);
-    LM::InstallInterfaces(system);
+    LM::InstallInterfaces(*sm);
     Migration::InstallInterfaces(*sm);
     Mii::InstallInterfaces(*sm);
     MM::InstallInterfaces(*sm);

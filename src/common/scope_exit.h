@@ -12,17 +12,10 @@ template <typename Func>
 struct ScopeExitHelper {
     explicit ScopeExitHelper(Func&& func) : func(std::move(func)) {}
     ~ScopeExitHelper() {
-        if (active) {
-            func();
-        }
-    }
-
-    void Cancel() {
-        active = false;
+        func();
     }
 
     Func func;
-    bool active{true};
 };
 
 template <typename Func>

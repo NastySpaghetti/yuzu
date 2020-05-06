@@ -30,7 +30,10 @@ void Controller::DuplicateSession(Kernel::HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1, IPC::ResponseBuilder::Flags::AlwaysMoveHandles};
     rb.Push(RESULT_SUCCESS);
-    rb.PushMoveObjects(ctx.Session()->GetParent()->Client());
+    Kernel::SharedPtr<Kernel::ClientSession> session{ctx.Session()->GetParent()->client};
+    rb.PushMoveObjects(session);
+
+    LOG_DEBUG(Service, "session={}", session->GetObjectId());
 }
 
 void Controller::DuplicateSessionEx(Kernel::HLERequestContext& ctx) {
@@ -44,7 +47,7 @@ void Controller::QueryPointerBufferSize(Kernel::HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(RESULT_SUCCESS);
-    rb.Push<u16>(0x1000);
+    rb.Push<u16>(0x500);
 }
 
 Controller::Controller() : ServiceFramework("IpcController") {

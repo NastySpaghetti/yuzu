@@ -120,7 +120,7 @@ private:
             duration_cast<std::chrono::microseconds>(steady_clock::now() - time_origin);
         entry.log_class = log_class;
         entry.log_level = log_level;
-        entry.filename = filename;
+        entry.filename = Common::TrimSourcePath(filename);
         entry.line_num = line_nr;
         entry.function = function;
         entry.message = std::move(message);
@@ -272,10 +272,8 @@ const char* GetLogClassName(Class log_class) {
 #undef CLS
 #undef SUB
     case Class::Count:
-        break;
+        UNREACHABLE();
     }
-    UNREACHABLE();
-    return "Invalid";
 }
 
 const char* GetLevelName(Level log_level) {
@@ -290,11 +288,9 @@ const char* GetLevelName(Level log_level) {
         LVL(Error);
         LVL(Critical);
     case Level::Count:
-        break;
+        UNREACHABLE();
     }
 #undef LVL
-    UNREACHABLE();
-    return "Invalid";
 }
 
 void SetGlobalFilter(const Filter& filter) {

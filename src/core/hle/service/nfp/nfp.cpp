@@ -16,14 +16,18 @@
 #include "core/hle/service/nfp/nfp_user.h"
 
 namespace Service::NFP {
+
 namespace ErrCodes {
+constexpr ResultCode ERR_TAG_FAILED(ErrorModule::NFP,
+                                    -1); // TODO(ogniK): Find the actual error code
 constexpr ResultCode ERR_NO_APPLICATION_AREA(ErrorModule::NFP, 152);
 } // namespace ErrCodes
 
 Module::Interface::Interface(std::shared_ptr<Module> module, Core::System& system, const char* name)
     : ServiceFramework(name), module(std::move(module)), system(system) {
     auto& kernel = system.Kernel();
-    nfc_tag_load = Kernel::WritableEvent::CreateEventPair(kernel, "IUser:NFCTagDetected");
+    nfc_tag_load = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Automatic,
+                                                          "IUser:NFCTagDetected");
 }
 
 Module::Interface::~Interface() = default;
@@ -31,7 +35,7 @@ Module::Interface::~Interface() = default;
 class IUser final : public ServiceFramework<IUser> {
 public:
     IUser(Module::Interface& nfp_interface, Core::System& system)
-        : ServiceFramework("NFP::IUser"), nfp_interface(nfp_interface) {
+        : ServiceFramework("NFP::IUser"), nfp_interface(nfp_interface), system(system) {
         static const FunctionInfo functions[] = {
             {0, &IUser::Initialize, "Initialize"},
             {1, &IUser::Finalize, "Finalize"},
@@ -62,9 +66,10 @@ public:
         RegisterHandlers(functions);
 
         auto& kernel = system.Kernel();
-        deactivate_event = Kernel::WritableEvent::CreateEventPair(kernel, "IUser:DeactivateEvent");
-        availability_change_event =
-            Kernel::WritableEvent::CreateEventPair(kernel, "IUser:AvailabilityChangeEvent");
+        deactivate_event = Kernel::WritableEvent::CreateEventPair(
+            kernel, Kernel::ResetType::Automatic, "IUser:DeactivateEvent");
+        availability_change_event = Kernel::WritableEvent::CreateEventPair(
+            kernel, Kernel::ResetType::Automatic, "IUser:AvailabilityChangeEvent");
     }
 
 private:
@@ -178,8 +183,6 @@ private:
         case DeviceState::TagRemoved:
             device_state = DeviceState::Initialized;
             break;
-        default:
-            break;
         }
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(RESULT_SUCCESS);
@@ -189,7 +192,7 @@ private:
         LOG_DEBUG(Service_NFP, "called");
 
         auto nfc_event = nfp_interface.GetNFCEvent();
-        if (!nfc_event->ShouldWait(&ctx.GetThread()) && !has_attached_handle) {
+        if (!nfc_event->ShouldWait(Kernel::GetCurrentThread()) && !has_attached_handle) {
             device_state = DeviceState::TagFound;
             nfc_event->Clear();
         }
@@ -321,6 +324,7 @@ private:
     Kernel::EventPair deactivate_event;
     Kernel::EventPair availability_change_event;
     const Module::Interface& nfp_interface;
+    Core::System& system;
 };
 
 void Module::Interface::CreateUserInterface(Kernel::HLERequestContext& ctx) {
@@ -342,7 +346,7 @@ bool Module::Interface::LoadAmiibo(const std::vector<u8>& buffer) {
     return true;
 }
 
-const std::shared_ptr<Kernel::ReadableEvent>& Module::Interface::GetNFCEvent() const {
+const Kernel::SharedPtr<Kernel::ReadableEvent>& Module::Interface::GetNFCEvent() const {
     return nfc_tag_load.readable;
 }
 

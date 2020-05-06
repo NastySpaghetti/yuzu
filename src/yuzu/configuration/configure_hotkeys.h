@@ -35,11 +35,7 @@ private:
     void RetranslateUI();
 
     void Configure(QModelIndex index);
-    std::pair<bool, QString> IsUsedKey(QKeySequence key_sequence) const;
-
-    void RestoreDefaults();
-    void ClearAll();
-    void PopupContextMenu(const QPoint& menu_location);
+    bool IsUsedKey(QKeySequence key_sequence) const;
 
     std::unique_ptr<Ui::ConfigureHotkeys> ui;
 
